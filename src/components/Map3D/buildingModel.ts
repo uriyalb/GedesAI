@@ -74,7 +74,7 @@ function styleOf(b: ModelBuilding, area: number): Style {
   if (b.top < 4.3 && area < 90) return 'shed';
   if (b.top > 38) return 'tower';
   if (/בית ספר|גן ילדים/.test(name)) return 'post';
-  if (b.kind === 'מבנה ציבור' || /הבימה|היכל|קולנוע|מוזיאון|תיאטרון/.test(name)) return 'civic';
+  if (b.kind === 'מבנה ציבור' || /הבימה|היכל|קולנוע|מוזיאון|תיאטרון|סנטר|קניון/.test(name)) return 'civic';
   const y = b.year ?? 0;
   if (!y) return b.pilotis ? 'block' : 'post';
   if (y < 1950) return 'intl';
