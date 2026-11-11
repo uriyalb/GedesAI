@@ -1,0 +1,6 @@
+{
+  "name": "Chissin 3D Block Explorer",
+  "description": "Dynamic 3D interactive map of the Chissin street block in Tel Aviv with geolocated architectural and municipal documents from Google Drive.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
