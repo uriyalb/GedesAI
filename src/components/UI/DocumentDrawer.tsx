@@ -1,193 +1,211 @@
-import React from 'react';
+import React, { useMemo, useState } from 'react';
 import { GeotaggedDocument, DocumentCategory } from '../../types/index.ts';
-import { formatCoordinatesDMS } from '../../utils/geo.ts';
-import { 
-  X, 
-  Search, 
-  MapPin, 
-  ExternalLink, 
-  FileText, 
-  Calendar, 
-  User, 
-  Hash, 
-  Compass,
-  ArrowUpRight,
-  Filter
-} from 'lucide-react';
+import { DocThumb } from './BuildingInfoCard.tsx';
+import { TARGET_FOLDER_URL } from '../../services/drive.ts';
+import { X, Search, FileText, MapPin, AlertTriangle, LogIn, Loader2, FolderOpen, RefreshCw } from 'lucide-react';
 
 interface DocumentDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   documents: GeotaggedDocument[];
   selectedDoc: GeotaggedDocument | null;
-  onSelectDoc: (doc: GeotaggedDocument) => void;
+  onLocateDoc: (doc: GeotaggedDocument) => void;
   onOpenViewer: (doc: GeotaggedDocument) => void;
   searchQuery: string;
   onSearchChange: (q: string) => void;
   selectedCategory: DocumentCategory | 'all';
   onCategoryChange: (cat: DocumentCategory | 'all') => void;
-  onOpenGeotagModal: () => void;
+  isSignedIn: boolean;
+  isSyncing: boolean;
+  onLogin: () => void;
+  onSync: () => void;
   lang: 'he' | 'en';
 }
+
+const CATEGORY_LABELS: Record<DocumentCategory | 'all', { he: string; en: string; color: string }> = {
+  all: { he: 'הכל', en: 'All', color: 'bg-slate-500' },
+  permit: { he: 'היתרים', en: 'Permits', color: 'bg-amber-500' },
+  architectural: { he: 'תכניות', en: 'Plans', color: 'bg-blue-500' },
+  preservation: { he: 'שימור', en: 'Preservation', color: 'bg-emerald-500' },
+  facade: { he: 'חזיתות', en: 'Facades', color: 'bg-cyan-500' },
+  cadastral: { he: 'טאבו/תשריט', en: 'Cadastral', color: 'bg-purple-500' },
+  photo: { he: 'צילומים', en: 'Photos', color: 'bg-pink-500' },
+};
 
 export const DocumentDrawer: React.FC<DocumentDrawerProps> = ({
   isOpen,
   onClose,
   documents,
   selectedDoc,
-  onSelectDoc,
+  onLocateDoc,
   onOpenViewer,
   searchQuery,
   onSearchChange,
   selectedCategory,
   onCategoryChange,
-  onOpenGeotagModal,
+  isSignedIn,
+  isSyncing,
+  onLogin,
+  onSync,
   lang,
 }) => {
   const isHe = lang === 'he';
+  const [onlyUnlinked, setOnlyUnlinked] = useState(false);
+  const unlinkedCount = useMemo(() => documents.filter((d) => !d.buildingId).length, [documents]);
+  const shown = onlyUnlinked ? documents.filter((d) => !d.buildingId) : documents;
 
   if (!isOpen) return null;
 
   return (
     <aside
-      className={`fixed top-16 bottom-0 z-30 w-full sm:w-96 bg-slate-900/95 border-slate-800 text-slate-100 shadow-2xl backdrop-blur-xl flex flex-col transition-all duration-300 ${
-        isHe ? 'left-0 border-r' : 'right-0 border-l'
+      className={`fixed top-14 sm:top-16 bottom-0 z-40 w-full sm:w-96 bg-slate-900/97 border-slate-800 text-slate-100 shadow-2xl backdrop-blur-xl flex flex-col ${
+        isHe ? 'left-0 sm:border-r' : 'right-0 sm:border-l'
       }`}
     >
       {/* Header */}
-      <div className="p-4 border-b border-slate-800 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <FileText className="w-5 h-5 text-blue-400" />
-          <h2 className="font-bold text-base text-white">
-            {isHe ? 'מסמכי בלוק חיסין' : 'Chissin Block Documents'}
-          </h2>
+      <div className="px-4 py-3 border-b border-slate-800 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <FileText className="w-5 h-5 text-blue-400 shrink-0" />
+          <h2 className="font-bold text-base text-white truncate">{isHe ? 'מסמכי התיקייה' : 'Folder documents'}</h2>
           <span className="text-xs font-semibold px-2 py-0.5 bg-blue-500/20 text-blue-300 rounded-full border border-blue-500/30">
             {documents.length}
           </span>
         </div>
-        <button
-          onClick={onClose}
-          className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
-          aria-label="Close drawer"
-        >
-          <X className="w-5 h-5" />
-        </button>
-      </div>
-
-      {/* Search Input */}
-      <div className="p-3 border-b border-slate-800 bg-slate-950/40">
-        <div className="relative">
-          <Search className="w-4 h-4 absolute top-1/2 -translate-y-1/2 left-3 text-slate-400" />
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder={isHe ? 'חיפוש לפי כתובת, אדריכל, היתר...' : 'Search address, architect, permit...'}
-            className="w-full bg-slate-800/90 border border-slate-700 rounded-xl pl-9 pr-3 py-2 text-xs sm:text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:border-blue-500"
-          />
+        <div className="flex items-center gap-1">
+          {isSignedIn && (
+            <button
+              onClick={onSync}
+              disabled={isSyncing}
+              className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+              aria-label={isHe ? 'רענן' : 'Refresh'}
+            >
+              <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin text-blue-400' : ''}`} />
+            </button>
+          )}
+          <a
+            href={TARGET_FOLDER_URL}
+            target="_blank"
+            rel="noreferrer"
+            className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800"
+            aria-label={isHe ? 'פתח את התיקייה ב-Drive' : 'Open folder in Drive'}
+          >
+            <FolderOpen className="w-4 h-4" />
+          </a>
+          <button onClick={onClose} className="p-2 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800" aria-label="Close">
+            <X className="w-5 h-5" />
+          </button>
         </div>
       </div>
 
-      {/* Document Items List */}
-      <div className="flex-1 overflow-y-auto p-3 space-y-2.5">
-        {documents.length === 0 ? (
-          <div className="text-center py-12 px-4">
-            <MapPin className="w-10 h-10 mx-auto text-slate-600 mb-2" />
-            <p className="text-sm text-slate-400">
-              {isHe ? 'לא נמצאו מסמכים תואמים' : 'No documents match filter'}
+      {/* Search & filters */}
+      <div className="p-3 border-b border-slate-800 bg-slate-950/40 space-y-2">
+        <div className="relative">
+          <Search className="w-4 h-4 absolute top-1/2 -translate-y-1/2 start-3 text-slate-400" />
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            placeholder={isHe ? 'חיפוש לפי שם, כתובת או תיקייה…' : 'Search name, address or folder…'}
+            className="w-full bg-slate-800/90 border border-slate-700 rounded-xl ps-9 pe-3 py-2 text-base sm:text-sm text-slate-100 placeholder-slate-400 focus:outline-none focus:border-blue-500"
+          />
+        </div>
+        <div className="flex items-center gap-1.5 overflow-x-auto scrollbar-none -mx-1 px-1">
+          {(Object.keys(CATEGORY_LABELS) as (DocumentCategory | 'all')[]).map((c) => (
+            <button
+              key={c}
+              onClick={() => onCategoryChange(c)}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs whitespace-nowrap border ${
+                selectedCategory === c ? 'bg-slate-700 text-white border-blue-500' : 'bg-slate-800/60 text-slate-400 border-slate-700'
+              }`}
+            >
+              <span className={`w-2 h-2 rounded-full ${CATEGORY_LABELS[c].color}`} />
+              {isHe ? CATEGORY_LABELS[c].he : CATEGORY_LABELS[c].en}
+            </button>
+          ))}
+        </div>
+        {unlinkedCount > 0 && (
+          <label className="flex items-center gap-2 text-xs text-amber-300">
+            <input type="checkbox" checked={onlyUnlinked} onChange={(e) => setOnlyUnlinked(e.target.checked)} />
+            {isHe ? `הצג רק מסמכים שלא שויכו למבנה (${unlinkedCount})` : `Only documents not linked to a building (${unlinkedCount})`}
+          </label>
+        )}
+      </div>
+
+      {/* List */}
+      <div className="flex-1 overflow-y-auto overscroll-contain p-3 space-y-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        {!isSignedIn ? (
+          <div className="text-center py-10 px-4 space-y-3">
+            <FileText className="w-10 h-10 mx-auto text-slate-600" />
+            <p className="text-sm text-slate-300">
+              {isHe
+                ? 'המסמכים נטענים ישירות מתיקיית Google Drive המשותפת. התחבר עם חשבון Google שיש לו גישה לתיקייה.'
+                : 'Documents load directly from the shared Google Drive folder. Sign in with a Google account that can access it.'}
             </p>
             <button
-              onClick={onOpenGeotagModal}
-              className="mt-3 text-xs font-semibold text-blue-400 hover:text-blue-300"
+              onClick={onLogin}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-white text-slate-900 rounded-xl font-semibold text-sm"
             >
-              {isHe ? '+ דקור מסמך חדש במיקום זה' : '+ Geotag a new document'}
+              <LogIn className="w-4 h-4" />
+              {isHe ? 'התחבר עם Google' : 'Sign in with Google'}
             </button>
           </div>
+        ) : isSyncing && documents.length === 0 ? (
+          <div className="flex items-center justify-center py-16 text-slate-400">
+            <Loader2 className="w-6 h-6 animate-spin" />
+          </div>
+        ) : shown.length === 0 ? (
+          <div className="text-center py-12 px-4">
+            <MapPin className="w-10 h-10 mx-auto text-slate-600 mb-2" />
+            <p className="text-sm text-slate-400">{isHe ? 'לא נמצאו מסמכים תואמים' : 'No matching documents'}</p>
+          </div>
         ) : (
-          documents.map((doc) => {
+          shown.map((doc) => {
             const isSelected = selectedDoc?.id === doc.id;
             return (
               <div
                 key={doc.id}
-                onClick={() => onSelectDoc(doc)}
-                className={`p-3 rounded-xl border cursor-pointer transition-all ${
-                  isSelected
-                    ? 'bg-blue-950/40 border-blue-500 shadow-md shadow-blue-500/10 ring-1 ring-blue-500'
-                    : 'bg-slate-800/60 border-slate-700/80 hover:bg-slate-800 hover:border-slate-600'
+                className={`p-2.5 rounded-xl border transition-all ${
+                  isSelected ? 'bg-blue-950/40 border-blue-500 ring-1 ring-blue-500' : 'bg-slate-800/60 border-slate-700/80'
                 }`}
               >
-                <div className="flex items-start justify-between gap-2 mb-1.5">
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2 h-2 rounded-full bg-blue-400" />
-                    <span className="text-[11px] font-semibold uppercase tracking-wider text-blue-300">
-                      {doc.category}
+                <button onClick={() => onOpenViewer(doc)} className="w-full flex items-start gap-2.5 text-start">
+                  <DocThumb doc={doc} />
+                  <div className="min-w-0 flex-1">
+                    <h3 className="font-semibold text-sm text-slate-100 line-clamp-2 break-words">{isHe ? doc.titleHe : doc.title}</h3>
+                    <div className="flex items-center gap-1.5 mt-1 text-[11px]">
+                      <span className={`w-2 h-2 rounded-full ${CATEGORY_LABELS[doc.category].color}`} />
+                      <span className="text-slate-400">{isHe ? CATEGORY_LABELS[doc.category].he : CATEGORY_LABELS[doc.category].en}</span>
+                      {doc.year > 0 && <span className="text-slate-500 font-mono">· {doc.year}</span>}
+                    </div>
+                    {doc.drivePath && <div className="text-[11px] text-slate-500 truncate mt-0.5">📁 {doc.drivePath}</div>}
+                  </div>
+                </button>
+                <div className="flex items-center justify-between gap-2 mt-2 pt-2 border-t border-slate-700/50 text-xs">
+                  {doc.buildingId ? (
+                    <button
+                      onClick={() => onLocateDoc(doc)}
+                      className="flex items-center gap-1 text-sky-300 hover:text-sky-200 min-w-0"
+                    >
+                      <MapPin className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">{isHe ? doc.addressHe : doc.address}</span>
+                    </button>
+                  ) : (
+                    <span className="flex items-center gap-1 text-amber-300">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      {isHe ? 'לא משויך למבנה' : 'Not linked'}
                     </span>
-                  </div>
-                  <span className="text-xs text-slate-400 font-mono">
-                    {doc.year}
-                  </span>
-                </div>
-
-                <h3 className="font-bold text-sm text-slate-100 line-clamp-1 mb-1">
-                  {isHe ? doc.titleHe : doc.title}
-                </h3>
-
-                <p className="text-xs text-slate-300 mb-2">
-                  {isHe ? doc.addressHe : doc.address}
-                </p>
-
-                {/* Coordinates Badge */}
-                <div className="flex items-center justify-between text-[11px] bg-slate-900/80 px-2.5 py-1.5 rounded-lg border border-slate-700/50 mb-2 font-mono text-cyan-300">
-                  <span className="truncate">
-                    📍 {doc.coordinates.lat.toFixed(5)}°, {doc.coordinates.lng.toFixed(5)}°
-                  </span>
-                  <span className="text-slate-500 text-[10px]">
-                    h: {doc.coordinates.elevation || 15}m
-                  </span>
-                </div>
-
-                {/* Details Footer Actions */}
-                <div className="flex items-center justify-between pt-1 border-t border-slate-700/50 text-xs">
-                  <span className="text-slate-400 text-[11px] truncate max-w-[140px]">
-                    {isHe ? doc.architectHe || 'אדריכל מקורי' : doc.architect || 'Historic'}
-                  </span>
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onSelectDoc(doc);
-                      }}
-                      className="px-2 py-0.5 text-xs font-medium text-slate-300 hover:text-white bg-slate-700/60 rounded"
-                    >
-                      {isHe ? 'התמקד' : 'Fly to'}
-                    </button>
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onOpenViewer(doc);
-                      }}
-                      className="flex items-center gap-1 px-2 py-0.5 text-xs font-semibold text-blue-300 hover:text-white bg-blue-600/40 hover:bg-blue-600 rounded transition-colors"
-                    >
-                      <span>{isHe ? 'צפה במסמך' : 'View'}</span>
-                      <ArrowUpRight className="w-3 h-3" />
-                    </button>
-                  </div>
+                  )}
+                  <button
+                    onClick={() => onOpenViewer(doc)}
+                    className="px-2.5 py-1 font-semibold text-blue-200 bg-blue-600/40 hover:bg-blue-600 rounded-lg shrink-0"
+                  >
+                    {isHe ? 'צפה' : 'View'}
+                  </button>
                 </div>
               </div>
             );
           })
         )}
-      </div>
-
-      {/* Geotag Button in Drawer Footer */}
-      <div className="p-3 border-t border-slate-800 bg-slate-950/60">
-        <button
-          onClick={onOpenGeotagModal}
-          className="w-full py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-xs sm:text-sm rounded-xl shadow-lg transition-all active:scale-[0.98] flex items-center justify-center gap-2"
-        >
-          <MapPin className="w-4 h-4" />
-          <span>{isHe ? 'דקור מסמך חדש ברחוב חיסין' : 'Pin New Document on Chissin'}</span>
-        </button>
       </div>
     </aside>
   );

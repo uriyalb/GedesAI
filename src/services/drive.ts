@@ -1,7 +1,14 @@
-import { getAccessToken } from './auth.ts';
-import { GeotaggedDocument, DocumentCategory } from '../types/index.ts';
+import { getAccessToken, clearAccessToken } from './auth.ts';
+import { DocumentCategory } from '../types/index.ts';
 
 export const TARGET_FOLDER_ID = '1h-QXqwpMGGOIjGzZEll8ZszRyCJvN2w1';
+export const TARGET_FOLDER_URL = `https://drive.google.com/drive/folders/${TARGET_FOLDER_ID}`;
+
+const API = 'https://www.googleapis.com/drive/v3';
+const FOLDER_MIME = 'application/vnd.google-apps.folder';
+const SHORTCUT_MIME = 'application/vnd.google-apps.shortcut';
+const MAX_DEPTH = 6;
+const MAX_FILES = 3000;
 
 export interface DriveFileItem {
   id: string;
@@ -10,154 +17,171 @@ export interface DriveFileItem {
   webViewLink?: string;
   webContentLink?: string;
   thumbnailLink?: string;
+  iconLink?: string;
   size?: string;
   createdTime?: string;
   modifiedTime?: string;
   description?: string;
-  iconLink?: string;
+  /** Names of the sub-folders between the root shared folder and the file. */
+  folderPath: string[];
+  shortcutDetails?: { targetId: string; targetMimeType: string };
 }
+
+export class DriveAuthError extends Error {}
 
 /**
  * Categorize a file based on its name or MIME type
  */
-export function inferCategoryFromFilename(name: string): DocumentCategory {
+export function inferCategoryFromFilename(name: string, mimeType = ''): DocumentCategory {
   const lower = name.toLowerCase();
-  if (lower.includes('היתר') || lower.includes('permit') || lower.includes('license')) {
+  if (lower.includes('היתר') || lower.includes('רישיון') || lower.includes('permit') || lower.includes('license')) {
     return 'permit';
   }
-  if (lower.includes('תכנית') || lower.includes('plan') || lower.includes('blueprint') || lower.includes('section') || lower.includes('elevation')) {
-    return 'architectural';
-  }
-  if (lower.includes('שימור') || lower.includes('תיק') || lower.includes('conservation') || lower.includes('preservation')) {
+  if (lower.includes('שימור') || lower.includes('תיק תיעוד') || lower.includes('conservation') || lower.includes('preservation')) {
     return 'preservation';
   }
   if (lower.includes('חזית') || lower.includes('facade')) {
     return 'facade';
   }
-  if (lower.includes('טאבו') || lower.includes('חלוקה') || lower.includes('cadastral') || lower.includes('parcel')) {
+  if (lower.includes('טאבו') || lower.includes('חלוקה') || lower.includes('תשריט') || lower.includes('גוש') || lower.includes('cadastral') || lower.includes('parcel')) {
     return 'cadastral';
   }
-  if (lower.includes('תמונה') || lower.includes('צילום') || lower.includes('photo') || lower.includes('jpg') || lower.includes('png')) {
+  if (
+    mimeType.startsWith('image/') ||
+    lower.includes('תמונה') ||
+    lower.includes('צילום') ||
+    lower.includes('photo')
+  ) {
     return 'photo';
   }
   return 'architectural';
 }
 
 /**
- * Extracts a building number along Chissin street if present in filename
- */
-export function extractBuildingNumber(name: string): number | null {
-  // Looks for patterns like "חיסין 7", "חיסין-7", "chissin_7", "chissin 14", "no 14"
-  const hebrewMatch = name.match(/חיסין\s*[-_]?\s*(\d{1,2})/i);
-  if (hebrewMatch && hebrewMatch[1]) {
-    return parseInt(hebrewMatch[1], 10);
-  }
-  const engMatch = name.match(/chissin\s*[-_]?\s*(\d{1,2})/i);
-  if (engMatch && engMatch[1]) {
-    return parseInt(engMatch[1], 10);
-  }
-  const genericMatch = name.match(/(?:building|בית|מס|no\.?)\s*(\d{1,2})/i);
-  if (genericMatch && genericMatch[1]) {
-    return parseInt(genericMatch[1], 10);
-  }
-  const anyNumMatch = name.match(/\b(\d{1,2})\b/);
-  if (anyNumMatch && anyNumMatch[1]) {
-    const num = parseInt(anyNumMatch[1], 10);
-    if (num >= 1 && num <= 30) return num;
-  }
-  return null;
-}
-
-/**
  * Format bytes to human readable string
  */
 export function formatBytes(bytes?: string | number): string {
-  if (!bytes) return 'Unknown size';
+  if (!bytes) return '';
   const b = typeof bytes === 'string' ? parseInt(bytes, 10) : bytes;
-  if (isNaN(b) || b <= 0) return '0 B';
+  if (isNaN(b) || b <= 0) return '';
   const units = ['B', 'KB', 'MB', 'GB'];
-  const i = Math.floor(Math.log(b) / Math.log(1024));
+  const i = Math.min(Math.floor(Math.log(b) / Math.log(1024)), units.length - 1);
   return `${(b / Math.pow(1024, i)).toFixed(1)} ${units[i]}`;
 }
 
-/**
- * Fetches files from the user's Google Drive folder.
- */
-export async function fetchDriveFolderFiles(
-  folderId: string = TARGET_FOLDER_ID
-): Promise<{ files: DriveFileItem[]; isLive: boolean; error?: string }> {
-  const token = getAccessToken();
-  if (!token) {
-    return {
-      files: [],
-      isLive: false,
-      error: 'Not authenticated with Google Drive. Sign in to view live files.',
-    };
+async function driveFetch(url: string, token: string, init?: RequestInit): Promise<Response> {
+  const res = await fetch(url, {
+    ...init,
+    headers: { ...(init?.headers || {}), Authorization: `Bearer ${token}` },
+  });
+  if (res.status === 401) {
+    clearAccessToken();
+    throw new DriveAuthError('Google sign-in expired');
   }
+  return res;
+}
 
-  try {
-    // 1. Try querying specific folder
-    const query = encodeURIComponent(`'${folderId}' in parents and trashed = false`);
-    const fields = encodeURIComponent(
-      'files(id, name, mimeType, webViewLink, webContentLink, thumbnailLink, size, createdTime, modifiedTime, description)'
-    );
-    const url = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=${fields}&pageSize=50`;
+const FILE_FIELDS =
+  'id,name,mimeType,webViewLink,webContentLink,thumbnailLink,iconLink,size,createdTime,modifiedTime,description,shortcutDetails';
 
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${token}`,
-      },
+async function listChildren(folderId: string, token: string): Promise<Omit<DriveFileItem, 'folderPath'>[]> {
+  const items: Omit<DriveFileItem, 'folderPath'>[] = [];
+  let pageToken: string | undefined;
+  do {
+    const params = new URLSearchParams({
+      q: `'${folderId}' in parents and trashed = false`,
+      fields: `nextPageToken, files(${FILE_FIELDS})`,
+      pageSize: '1000',
+      supportsAllDrives: 'true',
+      includeItemsFromAllDrives: 'true',
+      orderBy: 'name',
     });
-
-    if (!response.ok) {
-      const errJson = await response.json().catch(() => ({}));
-      console.warn('Drive folder fetch response not OK:', response.status, errJson);
-      // Fallback: if folder query failed (e.g. folder belongs to another user and permissions are pending),
-      // try querying user files matching "Chissin" or "חיסין" or recent files
-      return await fetchDriveFallbackSearch(token);
+    if (pageToken) params.set('pageToken', pageToken);
+    const res = await driveFetch(`${API}/files?${params}`, token);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || `Drive API error ${res.status}`);
     }
-
-    const data = await response.json();
-    const items: DriveFileItem[] = data.files || [];
-
-    // If folder was empty, try fallback search
-    if (items.length === 0) {
-      return await fetchDriveFallbackSearch(token);
-    }
-
-    return { files: items, isLive: true };
-  } catch (err: any) {
-    console.error('Error fetching Drive files:', err);
-    return {
-      files: [],
-      isLive: false,
-      error: err.message || 'Network error fetching Google Drive files',
-    };
-  }
+    const data = await res.json();
+    items.push(...(data.files || []));
+    pageToken = data.nextPageToken;
+  } while (pageToken);
+  return items;
 }
 
 /**
- * Fallback search across user's Drive for any relevant files
+ * Lists every file in the shared folder, including files inside sub-folders.
  */
-async function fetchDriveFallbackSearch(token: string): Promise<{ files: DriveFileItem[]; isLive: boolean; error?: string }> {
-  try {
-    const fields = encodeURIComponent(
-      'files(id, name, mimeType, webViewLink, webContentLink, thumbnailLink, size, createdTime, modifiedTime, description)'
-    );
-    // Search files related to Chissin or recent files
-    const query = encodeURIComponent(`trashed = false and (name contains 'חיסין' or name contains 'Chissin' or mimeType contains 'pdf' or mimeType contains 'image')`);
-    const url = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=${fields}&pageSize=25`;
-
-    const response = await fetch(url, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-
-    if (response.ok) {
-      const data = await response.json();
-      return { files: data.files || [], isLive: true };
-    }
-    return { files: [], isLive: true };
-  } catch (e: any) {
-    return { files: [], isLive: false, error: e.message };
+export async function fetchDriveFolderFiles(
+  folderId: string = TARGET_FOLDER_ID
+): Promise<{ files: DriveFileItem[]; error?: string; needsAuth?: boolean }> {
+  const token = getAccessToken();
+  if (!token) {
+    return { files: [], needsAuth: true };
   }
+
+  const files: DriveFileItem[] = [];
+  const visited = new Set<string>();
+
+  const walk = async (id: string, path: string[], depth: number) => {
+    if (visited.has(id) || depth > MAX_DEPTH || files.length >= MAX_FILES) return;
+    visited.add(id);
+    const children = await listChildren(id, token);
+    const subfolders: { id: string; name: string }[] = [];
+    for (const c of children) {
+      if (c.mimeType === FOLDER_MIME) {
+        subfolders.push({ id: c.id, name: c.name });
+      } else if (c.mimeType === SHORTCUT_MIME && c.shortcutDetails?.targetMimeType === FOLDER_MIME) {
+        subfolders.push({ id: c.shortcutDetails.targetId, name: c.name });
+      } else if (c.mimeType === SHORTCUT_MIME && c.shortcutDetails) {
+        files.push({ ...c, id: c.shortcutDetails.targetId, mimeType: c.shortcutDetails.targetMimeType, folderPath: path });
+      } else {
+        files.push({ ...c, folderPath: path });
+      }
+    }
+    // Walk sub-folders a few at a time
+    for (let i = 0; i < subfolders.length; i += 4) {
+      await Promise.all(subfolders.slice(i, i + 4).map((f) => walk(f.id, [...path, f.name], depth + 1)));
+    }
+  };
+
+  try {
+    await walk(folderId, [], 0);
+    return { files };
+  } catch (err: any) {
+    if (err instanceof DriveAuthError) return { files: [], needsAuth: true };
+    console.error('Error fetching Drive files:', err);
+    return { files, error: err?.message || 'Network error fetching Google Drive files' };
+  }
+}
+
+/** Google-native formats that must be exported to be viewed. */
+export function isGoogleNative(mimeType?: string): boolean {
+  return !!mimeType && mimeType.startsWith('application/vnd.google-apps.');
+}
+
+/**
+ * Downloads a file's content (or a PDF export of Google Docs/Sheets/Slides) as a Blob.
+ */
+export async function downloadDriveFile(fileId: string, mimeType: string | undefined, signal?: AbortSignal): Promise<Blob> {
+  const token = getAccessToken();
+  if (!token) throw new DriveAuthError('Not signed in');
+  const url = isGoogleNative(mimeType)
+    ? `${API}/files/${fileId}/export?mimeType=application/pdf`
+    : `${API}/files/${fileId}?alt=media&supportsAllDrives=true`;
+  const res = await driveFetch(url, token, { signal });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `Drive download failed (${res.status})`);
+  }
+  return res.blob();
+}
+
+/** Direct links that work in the browser for anyone the file is shared with. */
+export function drivePreviewUrl(fileId: string): string {
+  return `https://drive.google.com/file/d/${fileId}/preview`;
+}
+
+export function driveViewUrl(fileId: string): string {
+  return `https://drive.google.com/file/d/${fileId}/view`;
 }
