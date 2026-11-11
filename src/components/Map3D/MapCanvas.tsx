@@ -55,6 +55,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
     });
 
     sceneManagerRef.current = manager;
+    if (import.meta.env.DEV) (window as unknown as { __scene?: ChissinSceneManager }).__scene = manager;
     manager.setBuildings(buildings);
     manager.setDocuments(documents);
     manager.setPhotoMarkers(photoMarkers, loadPhotoThumb);

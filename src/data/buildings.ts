@@ -1,5 +1,7 @@
 import { BuildingAddress, BuildingPlot } from '../types/index.ts';
 import { GIS_BUILDINGS, LEGACY_BUILDING_IDS } from './gisBuildings.ts';
+import { groundHeight } from '../utils/terrain.ts';
+import { latLngToWorld } from '../utils/geo.ts';
 
 export interface StreetInfo {
   /** Display name in Hebrew. */
@@ -100,6 +102,12 @@ export const ALL_BUILDINGS: BuildingPlot[] = (() => {
     }
 
     const name = g.n || undefined;
+    // Heights above the ground from the municipal surface model: top of the roof structures and mean roof level.
+    // (The older "h" also counts basements and the lowest ground point, so it overstates what stands above the street.)
+    const top = g.rx ?? Math.max(2.5, g.h - 2.5);
+    const roofHeight = g.rm ?? Math.max(2.2, top - 2.6);
+    const w = latLngToWorld(best.lat, best.lng);
+    const base = Number(groundHeight(w.x, w.z).toFixed(2));
     const titleHe = primary ? formatAddressHe(primary) : '';
     const titleEn = primary ? formatAddressEn(primary) : '';
 
@@ -114,11 +122,12 @@ export const ALL_BUILDINGS: BuildingPlot[] = (() => {
       name,
       kind: g.k,
       polygons: g.p,
-      baseElevation: g.b,
+      baseElevation: base,
       pilotis: g.pl === 1,
-      centerCoordinates: { lat: best.lat, lng: best.lng, elevation: g.b + g.h },
-      height: g.h,
-      levels: g.f && g.f > 0 ? g.f : Math.max(1, Math.round(g.h / 3.2)),
+      centerCoordinates: { lat: best.lat, lng: best.lng, elevation: base + top },
+      height: top,
+      roofHeight,
+      levels: g.f && g.f > 0 ? g.f : Math.max(1, Math.round(roofHeight / 3.2)),
       yearBuilt: g.y ?? null,
       preservation: g.pr ? { type: g.pr[0], plan: g.pr[1], strict: g.pr[2] === 1, note: g.pr[3] } : undefined,
       isChissin: addresses.some((a) => a.street === 'חיסין'),

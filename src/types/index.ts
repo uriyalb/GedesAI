@@ -107,7 +107,10 @@ export interface BuildingPlot {
   /** Open ground floor on columns (pilotis). */
   pilotis: boolean;
   centerCoordinates: GeotagCoordinates;
+  /** Top of the building (incl. roof structures) above the ground (m). */
   height: number;
+  /** Mean level of the main roof above the ground (m). */
+  roofHeight: number;
   levels: number;
   yearBuilt: number | null;
   preservation?: BuildingPreservation;
