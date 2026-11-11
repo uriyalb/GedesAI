@@ -24,35 +24,35 @@ export interface DriveFileItem {
   description?: string;
   /** Names of the sub-folders between the root shared folder and the file. */
   folderPath: string[];
+  /** Ids of those sub-folders (same order as folderPath). */
+  folderIds: string[];
   shortcutDetails?: { targetId: string; targetMimeType: string };
 }
 
 export class DriveAuthError extends Error {}
 
 /**
- * Categorize a file based on its name or MIME type
+ * Categorize a file from its name (and folder names) or MIME type.
+ * Archive files are named like "חיסין 20 - תכניות קומות חזיתות וחתכים - 1936 - …".
  */
 export function inferCategoryFromFilename(name: string, mimeType = ''): DocumentCategory {
   const lower = name.toLowerCase();
-  if (lower.includes('היתר') || lower.includes('רישיון') || lower.includes('permit') || lower.includes('license')) {
+  const has = (...words: string[]) => words.some((w) => lower.includes(w));
+  if (has('היתר', 'רישיון', 'רשיון', 'רישוי', 'טופס 4', 'גמר בני', 'אישור גמר', 'permit', 'license')) {
     return 'permit';
   }
-  if (lower.includes('שימור') || lower.includes('תיק תיעוד') || lower.includes('conservation') || lower.includes('preservation')) {
+  if (has('שימור', 'תיק תיעוד', 'conservation', 'preservation')) {
     return 'preservation';
   }
-  if (lower.includes('חזית') || lower.includes('facade')) {
-    return 'facade';
-  }
-  if (lower.includes('טאבו') || lower.includes('חלוקה') || lower.includes('תשריט') || lower.includes('גוש') || lower.includes('cadastral') || lower.includes('parcel')) {
+  if (has('תשריט', 'טאבו', 'חלוקה', 'גוש', 'מדידה', 'טופוגרפי', 'תרשים סביבה', 'תרשים מגרש', 'cadastral', 'parcel', 'survey')) {
     return 'cadastral';
   }
-  if (
-    mimeType.startsWith('image/') ||
-    lower.includes('תמונה') ||
-    lower.includes('צילום') ||
-    lower.includes('photo')
-  ) {
+  if (mimeType.startsWith('image/') || has('תצלום', 'צילום', 'תמונה', 'photo')) {
     return 'photo';
+  }
+  // Facade drawings, but not general plan sheets that also include elevations
+  if (has('חזית', 'facade') && !has('תכני', 'תוכני', 'קומ', 'plan')) {
+    return 'facade';
   }
   return 'architectural';
 }
@@ -123,7 +123,7 @@ export async function fetchDriveFolderFiles(
   const files: DriveFileItem[] = [];
   const visited = new Set<string>();
 
-  const walk = async (id: string, path: string[], depth: number) => {
+  const walk = async (id: string, path: string[], ids: string[], depth: number) => {
     if (visited.has(id) || depth > MAX_DEPTH || files.length >= MAX_FILES) return;
     visited.add(id);
     const children = await listChildren(id, token);
@@ -134,19 +134,27 @@ export async function fetchDriveFolderFiles(
       } else if (c.mimeType === SHORTCUT_MIME && c.shortcutDetails?.targetMimeType === FOLDER_MIME) {
         subfolders.push({ id: c.shortcutDetails.targetId, name: c.name });
       } else if (c.mimeType === SHORTCUT_MIME && c.shortcutDetails) {
-        files.push({ ...c, id: c.shortcutDetails.targetId, mimeType: c.shortcutDetails.targetMimeType, folderPath: path });
+        files.push({
+          ...c,
+          id: c.shortcutDetails.targetId,
+          mimeType: c.shortcutDetails.targetMimeType,
+          folderPath: path,
+          folderIds: ids,
+        });
       } else {
-        files.push({ ...c, folderPath: path });
+        files.push({ ...c, folderPath: path, folderIds: ids });
       }
     }
     // Walk sub-folders a few at a time
-    for (let i = 0; i < subfolders.length; i += 4) {
-      await Promise.all(subfolders.slice(i, i + 4).map((f) => walk(f.id, [...path, f.name], depth + 1)));
+    for (let i = 0; i < subfolders.length; i += 6) {
+      await Promise.all(
+        subfolders.slice(i, i + 6).map((f) => walk(f.id, [...path, f.name], [...ids, f.id], depth + 1))
+      );
     }
   };
 
   try {
-    await walk(folderId, [], 0);
+    await walk(folderId, [], [], 0);
     return { files };
   } catch (err: any) {
     if (err instanceof DriveAuthError) return { files: [], needsAuth: true };

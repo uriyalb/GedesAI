@@ -29,6 +29,9 @@ export interface GeotaggedDocument {
   /** All buildings referenced by the document (e.g. a corner plan covering two addresses). */
   buildingIds?: string[];
   matchedBy?: DocumentMatchSource;
+  /** Public space / plan area the document describes when it isn't about a single building. */
+  areaHe?: string;
+  areaEn?: string;
   coordinates: GeotagCoordinates;
   /** Year mentioned in the file name, 0 when unknown. */
   year: number;

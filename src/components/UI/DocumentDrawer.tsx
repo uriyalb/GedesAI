@@ -1,8 +1,10 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { GeotaggedDocument, DocumentCategory } from '../../types/index.ts';
 import { DocThumb } from './BuildingInfoCard.tsx';
 import { TARGET_FOLDER_URL } from '../../services/drive.ts';
-import { X, Search, FileText, MapPin, AlertTriangle, LogIn, Loader2, FolderOpen, RefreshCw } from 'lucide-react';
+import { X, Search, FileText, MapPin, AlertTriangle, LogIn, Loader2, FolderOpen, RefreshCw, Trees } from 'lucide-react';
+
+const PAGE_SIZE = 80;
 
 interface DocumentDrawerProps {
   isOpen: boolean;
@@ -51,8 +53,14 @@ export const DocumentDrawer: React.FC<DocumentDrawerProps> = ({
 }) => {
   const isHe = lang === 'he';
   const [onlyUnlinked, setOnlyUnlinked] = useState(false);
-  const unlinkedCount = useMemo(() => documents.filter((d) => !d.buildingId).length, [documents]);
-  const shown = onlyUnlinked ? documents.filter((d) => !d.buildingId) : documents;
+  const [limit, setLimit] = useState(PAGE_SIZE);
+  const isUnlinked = (d: GeotaggedDocument) => !d.buildingId && !d.areaHe;
+  const unlinkedCount = useMemo(() => documents.filter(isUnlinked).length, [documents]);
+  const filtered = onlyUnlinked ? documents.filter(isUnlinked) : documents;
+  const shown = filtered.slice(0, limit);
+
+  // Start from the top of the list whenever the filters change
+  useEffect(() => setLimit(PAGE_SIZE), [documents, onlyUnlinked]);
 
   if (!isOpen) return null;
 
@@ -159,7 +167,8 @@ export const DocumentDrawer: React.FC<DocumentDrawerProps> = ({
             <p className="text-sm text-slate-400">{isHe ? 'לא נמצאו מסמכים תואמים' : 'No matching documents'}</p>
           </div>
         ) : (
-          shown.map((doc) => {
+          <>
+          {shown.map((doc) => {
             const isSelected = selectedDoc?.id === doc.id;
             return (
               <div
@@ -189,6 +198,11 @@ export const DocumentDrawer: React.FC<DocumentDrawerProps> = ({
                       <MapPin className="w-3.5 h-3.5 shrink-0" />
                       <span className="truncate">{isHe ? doc.addressHe : doc.address}</span>
                     </button>
+                  ) : doc.areaHe ? (
+                    <span className="flex items-center gap-1 text-emerald-300/90 min-w-0">
+                      <Trees className="w-3.5 h-3.5 shrink-0" />
+                      <span className="truncate">{isHe ? doc.areaHe : doc.areaEn}</span>
+                    </span>
                   ) : (
                     <span className="flex items-center gap-1 text-amber-300">
                       <AlertTriangle className="w-3.5 h-3.5" />
@@ -204,7 +218,18 @@ export const DocumentDrawer: React.FC<DocumentDrawerProps> = ({
                 </div>
               </div>
             );
-          })
+          })}
+          {filtered.length > shown.length && (
+            <button
+              onClick={() => setLimit((l) => l + PAGE_SIZE)}
+              className="w-full py-2.5 rounded-xl border border-slate-700 text-sm text-slate-300 hover:bg-slate-800"
+            >
+              {isHe
+                ? `הצג עוד (${filtered.length - shown.length} נוספים)`
+                : `Show more (${filtered.length - shown.length} more)`}
+            </button>
+          )}
+          </>
         )}
       </div>
     </aside>
