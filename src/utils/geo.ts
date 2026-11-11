@@ -111,7 +111,8 @@ export function filterDocuments(
         (doc.architectHe && doc.architectHe.toLowerCase().includes(q)) ||
         (doc.permitNumber && doc.permitNumber.toLowerCase().includes(q)) ||
         doc.description.toLowerCase().includes(q) ||
-        doc.descriptionHe.toLowerCase().includes(q);
+        doc.descriptionHe.toLowerCase().includes(q) ||
+        (doc.drivePath && doc.drivePath.toLowerCase().includes(q));
       if (!match) return false;
     }
 
@@ -125,8 +126,8 @@ export function filterDocuments(
       return false;
     }
 
-    // Year range
-    if (doc.year < filters.yearMin || doc.year > filters.yearMax) {
+    // Year range (documents with an unknown year are always kept)
+    if (doc.year && (doc.year < filters.yearMin || doc.year > filters.yearMax)) {
       return false;
     }
 

@@ -4,6 +4,7 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { BuildingPlot, GeotaggedDocument, ViewPreset } from '../../types/index.ts';
 import { REAL_BUILDINGS, REAL_HIGHWAYS, REAL_PARKS, RealBuildingEnvelope } from '../../data/realWorldBlock.ts';
 import { latLngToWorld, worldToLatLng } from '../../utils/geo.ts';
+import { BUILDINGS_BY_ID } from '../../data/buildings.ts';
 import { getFacadeTexture, getRoofTexture, getSatelliteGroundTexture } from '../../utils/buildingTextures.ts';
 
 // Pre-allocated reusable vectors for zero GC in render loop
@@ -11,10 +12,8 @@ const _raycaster = new THREE.Raycaster();
 const _pointer = new THREE.Vector2();
 
 export interface SceneCallbacks {
-  onSelectDocument: (doc: GeotaggedDocument | null) => void;
-  onHoverDocument: (doc: GeotaggedDocument | null, screenPos?: { x: number; y: number }) => void;
   onSelectBuilding: (building: BuildingPlot | null) => void;
-  onGeotagPickPoint: (lat: number, lng: number, elevation: number) => void;
+  onGeotagPickPoint?: (lat: number, lng: number, elevation: number) => void;
 }
 
 export class ChissinSceneManager {
@@ -39,7 +38,7 @@ export class ChissinSceneManager {
   // Data & State
   private buildings: BuildingPlot[] = [];
   private documents: GeotaggedDocument[] = [];
-  private selectedDocId: string | null = null;
+  private selectedBuildingId: string | null = null;
   private isGeotagModeActive = false;
   private showTrees = true;
   private isArchitecturalMode = false;
@@ -54,6 +53,7 @@ export class ChissinSceneManager {
   private callbacks: SceneCallbacks;
   private interactiveMeshes: THREE.Object3D[] = [];
   private pinMeshesMap = new Map<string, THREE.Group>();
+  private resizeObserver: ResizeObserver | null = null;
 
   constructor(container: HTMLElement, callbacks: SceneCallbacks) {
     this.container = container;
@@ -521,9 +521,10 @@ export class ChissinSceneManager {
         );
       }
 
-      // Floating address billboard for Chissin buildings
-      if (isChissinBuilding && b.housenumber) {
-        const labelSprite = this.createAddressSprite(b.housenumber);
+      // Floating address billboard for Chissin buildings (address from the municipal GIS)
+      const chissinAddr = BUILDINGS_BY_ID.get(b.id)?.addresses.find((a) => a.street === 'חיסין');
+      if (chissinAddr) {
+        const labelSprite = this.createAddressSprite(`${chissinAddr.number}${chissinAddr.entrance}`);
         labelSprite.position.set(centerWorld.x, b.height + 4.5, centerWorld.z);
         this.realBuildingsGroup.add(labelSprite);
       }
@@ -687,45 +688,44 @@ export class ChissinSceneManager {
       this.disposeObject(obj);
     }
 
-    docs.forEach((doc) => {
-      const pinGroup = this.createDocumentPin(doc);
+    // One pin per building, showing how many documents are linked to it.
+    const counts = new Map<string, number>();
+    docs.forEach((d) => {
+      const ids = d.buildingIds?.length ? d.buildingIds : d.buildingId ? [d.buildingId] : [];
+      ids.forEach((id) => counts.set(id, (counts.get(id) || 0) + 1));
+    });
+
+    counts.forEach((count, buildingId) => {
+      const building = BUILDINGS_BY_ID.get(buildingId);
+      if (!building) return;
+      const pinGroup = this.createBuildingPin(building, count);
       this.documentsGroup.add(pinGroup);
-      this.pinMeshesMap.set(doc.id, pinGroup);
+      this.pinMeshesMap.set(buildingId, pinGroup);
     });
 
     this.updateInteractiveMeshes();
-    this.requestRender();
+    this.highlightPin(this.selectedBuildingId);
   }
 
-  private createDocumentPin(doc: GeotaggedDocument): THREE.Group {
+  private createBuildingPin(building: BuildingPlot, count: number): THREE.Group {
     const pinGroup = new THREE.Group();
-    const worldPos = latLngToWorld(doc.coordinates.lat, doc.coordinates.lng);
-    const elevation = doc.coordinates.elevation || 17;
+    const worldPos = latLngToWorld(building.centerCoordinates.lat, building.centerCoordinates.lng);
+    const elevation = building.height + 7;
 
     pinGroup.position.set(worldPos.x, elevation, worldPos.z);
-    pinGroup.userData = { type: 'document', id: doc.id, data: doc };
+    pinGroup.userData = { type: 'buildingPin', buildingId: building.id };
 
-    // Category colors
-    let pinColor = 0x3b82f6; // blue: architectural
-    if (doc.category === 'permit') pinColor = 0xf59e0b; // amber
-    if (doc.category === 'preservation') pinColor = 0x10b981; // emerald
-    if (doc.category === 'cadastral') pinColor = 0x8b5cf6; // purple
-    if (doc.category === 'photo') pinColor = 0xec4899; // pink
-    if (doc.category === 'facade') pinColor = 0x06b6d4; // cyan
+    const pinColor = 0x2563eb;
 
-    // 1. Vertical indicator needle
+    // Vertical needle down to the roof
     const needleGeo = new THREE.CylinderGeometry(0.12, 0.02, 6.0, 8);
-    const needleMat = new THREE.MeshStandardMaterial({
-      color: 0x64748b,
-      metalness: 0.8,
-      roughness: 0.2,
-    });
+    const needleMat = new THREE.MeshStandardMaterial({ color: 0x64748b, metalness: 0.8, roughness: 0.2 });
     const needle = new THREE.Mesh(needleGeo, needleMat);
     needle.position.y = -3.0;
     pinGroup.add(needle);
 
-    // 2. Glowing Head Sphere
-    const headGeo = new THREE.SphereGeometry(1.3, 16, 16);
+    // Head sphere (large enough to tap on a phone)
+    const headGeo = new THREE.SphereGeometry(1.6, 16, 16);
     const headMat = new THREE.MeshStandardMaterial({
       color: pinColor,
       roughness: 0.2,
@@ -734,76 +734,36 @@ export class ChissinSceneManager {
       emissiveIntensity: 0.35,
     });
     const headMesh = new THREE.Mesh(headGeo, headMat);
-    headMesh.userData = { isPinHead: true, docId: doc.id };
+    headMesh.userData = { isPinHead: true };
     headMesh.castShadow = !this.isSoftwareGl;
     pinGroup.add(headMesh);
 
-    // 3. Floating Ring Indicator (Toroid)
-    const ringGeo = new THREE.TorusGeometry(2.0, 0.15, 8, 24);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: pinColor,
-      transparent: true,
-      opacity: 0.65,
-    });
-    const ringMesh = new THREE.Mesh(ringGeo, ringMat);
-    ringMesh.rotation.x = Math.PI / 2;
-    pinGroup.add(ringMesh);
-
-    // 4. Ground Contact Beacon Circle
-    const beaconGeo = new THREE.RingGeometry(0.8, 1.8, 16);
-    const beaconMat = new THREE.MeshBasicMaterial({
-      color: pinColor,
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.4,
-    });
-    const beacon = new THREE.Mesh(beaconGeo, beaconMat);
-    beacon.rotation.x = -Math.PI / 2;
-    beacon.position.y = -elevation + 0.05;
-    pinGroup.add(beacon);
-
-    // 5. Document Badge
-    const labelCanvas = document.createElement('canvas');
-    labelCanvas.width = 384;
-    labelCanvas.height = 110;
-    const ctx = labelCanvas.getContext('2d');
+    // Count badge
+    const canvas = document.createElement('canvas');
+    canvas.width = 128;
+    canvas.height = 128;
+    const ctx = canvas.getContext('2d');
     if (ctx) {
       ctx.fillStyle = '#0f172a';
       ctx.beginPath();
-      ctx.roundRect(8, 8, 368, 94, 16);
+      ctx.arc(64, 64, 58, 0, Math.PI * 2);
       ctx.fill();
-
-      ctx.strokeStyle = `#${pinColor.toString(16).padStart(6, '0')}`;
-      ctx.lineWidth = 5;
+      ctx.strokeStyle = '#60a5fa';
+      ctx.lineWidth = 8;
       ctx.stroke();
-
-      ctx.fillStyle = ctx.strokeStyle;
-      ctx.beginPath();
-      ctx.arc(42, 55, 14, 0, Math.PI * 2);
-      ctx.fill();
-
       ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 30px sans-serif';
-      ctx.textAlign = 'left';
-      const truncatedTitle = doc.titleHe.length > 18 ? doc.titleHe.substring(0, 18) + '...' : doc.titleHe;
-      ctx.fillText(truncatedTitle, 72, 48);
-
-      ctx.fillStyle = '#94a3b8';
-      ctx.font = '22px sans-serif';
-      ctx.fillText(`${doc.year} • ${doc.addressHe}`, 72, 82);
+      ctx.font = 'bold 60px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(count > 99 ? '99+' : String(count), 64, 68);
     }
-
-    const labelTex = new THREE.CanvasTexture(labelCanvas);
-    labelTex.colorSpace = THREE.SRGBColorSpace;
-    const labelMat = new THREE.SpriteMaterial({
-      map: labelTex,
-      transparent: true,
-      depthTest: false,
-    });
-    const labelSprite = new THREE.Sprite(labelMat);
-    labelSprite.scale.set(7.5, 2.2, 1);
-    labelSprite.position.set(0, 2.8, 0);
-    pinGroup.add(labelSprite);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    const badge = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+    badge.scale.set(3.2, 3.2, 1);
+    badge.position.set(0, 3.2, 0);
+    badge.renderOrder = 10;
+    pinGroup.add(badge);
 
     return pinGroup;
   }
@@ -830,30 +790,18 @@ export class ChissinSceneManager {
   }
 
   public focusDocument(doc: GeotaggedDocument) {
-    this.selectedDocId = doc.id;
-    const worldPos = latLngToWorld(doc.coordinates.lat, doc.coordinates.lng);
-    const targetElevation = doc.coordinates.elevation || 17;
-
-    const targetPos = new THREE.Vector3(
-      worldPos.x + 24,
-      targetElevation + 20,
-      worldPos.z + 36
-    );
-    const targetLookAt = new THREE.Vector3(worldPos.x, targetElevation, worldPos.z);
-
-    this.startCameraTransition(targetPos, targetLookAt);
-    this.highlightPin(doc.id);
+    const building = doc.buildingId ? BUILDINGS_BY_ID.get(doc.buildingId) : undefined;
+    if (building) this.focusBuilding(building);
   }
 
   public focusBuilding(building: BuildingPlot) {
     const worldPos = latLngToWorld(building.centerCoordinates.lat, building.centerCoordinates.lng);
-
-    const targetPos = new THREE.Vector3(
-      worldPos.x + 35,
-      building.height + 28,
-      worldPos.z + 50
-    );
+    // Keep the current viewing direction, just move closer to the building.
+    const dir = this.camera.position.clone().sub(this.controls.target).normalize();
+    const dist = Math.max(70, building.height * 3);
     const targetLookAt = new THREE.Vector3(worldPos.x, building.height / 2, worldPos.z);
+    const targetPos = targetLookAt.clone().add(dir.multiplyScalar(dist));
+    targetPos.y = Math.max(targetPos.y, building.height + 25);
 
     this.startCameraTransition(targetPos, targetLookAt);
   }
@@ -896,9 +844,9 @@ export class ChissinSceneManager {
     this.requestRender();
   }
 
-  private highlightPin(docId: string | null) {
+  private highlightPin(buildingId: string | null) {
     this.pinMeshesMap.forEach((pinGroup, id) => {
-      const isSelected = id === docId;
+      const isSelected = id === buildingId;
       pinGroup.traverse((child) => {
         if (child instanceof THREE.Mesh && child.userData.isPinHead) {
           const mat = child.material as THREE.MeshStandardMaterial;
@@ -924,18 +872,15 @@ export class ChissinSceneManager {
   }
 
   public selectBuilding(building: BuildingPlot | null) {
+    this.selectedBuildingId = building?.id ?? null;
+    this.highlightPin(this.selectedBuildingId);
     if (!building) {
       this.highlightBuilding(null);
       return;
     }
     let foundMesh: THREE.Object3D | null = null;
-    this.realBuildingsGroup.traverse((child) => {
-      if (
-        child instanceof THREE.Mesh &&
-        child.userData?.type === 'building' &&
-        (child.userData.id === building.id ||
-          (building.number > 0 && child.userData.housenumber === building.number.toString()))
-      ) {
+    this.realBuildingsGroup.children.forEach((child) => {
+      if (child instanceof THREE.Mesh && child.userData?.type === 'building' && child.userData.id === building.id) {
         foundMesh = child;
       }
     });
@@ -969,165 +914,97 @@ export class ChissinSceneManager {
     this.requestRender();
   }
 
+  /** Returns the building id under the pointer (via a building mesh or a document pin). */
+  private pickBuildingId(): string | null {
+    _raycaster.setFromCamera(_pointer, this.camera);
+    const hits = _raycaster.intersectObjects(this.interactiveMeshes, false);
+    for (const hit of hits) {
+      let curr: THREE.Object3D | null = hit.object;
+      while (curr && curr !== this.scene) {
+        if (curr.userData?.type === 'buildingPin') return curr.userData.buildingId;
+        if (curr.userData?.type === 'building') return curr.userData.id;
+        curr = curr.parent;
+      }
+    }
+    return null;
+  }
+
+  private setPointerFromEvent(e: { clientX: number; clientY: number }) {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    _pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
+    _pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
+  }
+
   private bindEvents() {
     const dom = this.renderer.domElement;
+    let hoverFrame = 0;
 
     dom.addEventListener('pointermove', (e) => {
-      const rect = dom.getBoundingClientRect();
-      _pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      _pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-
-      if (this.isGeotagModeActive) return;
-
-      _raycaster.setFromCamera(_pointer, this.camera);
-      const intersects = _raycaster.intersectObjects(this.interactiveMeshes, false);
-
-      let hoveredDoc: GeotaggedDocument | null = null;
-      for (const hit of intersects) {
-        let current: THREE.Object3D | null = hit.object;
-        while (current && current !== this.scene) {
-          if (current.userData?.type === 'document') {
-            hoveredDoc = current.userData.data;
-            break;
-          }
-          current = current.parent;
-        }
-        if (hoveredDoc) break;
-      }
-
-      if (hoveredDoc) {
-        dom.style.cursor = 'pointer';
-        this.callbacks.onHoverDocument(hoveredDoc, { x: e.clientX, y: e.clientY });
-      } else {
-        dom.style.cursor = 'default';
-        this.callbacks.onHoverDocument(null);
-      }
+      if (e.pointerType !== 'mouse' || this.isGeotagModeActive || e.buttons) return;
+      cancelAnimationFrame(hoverFrame);
+      hoverFrame = requestAnimationFrame(() => {
+        this.setPointerFromEvent(e);
+        dom.style.cursor = this.pickBuildingId() ? 'pointer' : 'default';
+      });
     });
 
-    let pointerDownPos = { x: 0, y: 0 };
+    let pointerDown = { x: 0, y: 0, t: 0, type: 'mouse' };
 
     dom.addEventListener('pointerdown', (e) => {
-      pointerDownPos = { x: e.clientX, y: e.clientY };
+      pointerDown = { x: e.clientX, y: e.clientY, t: performance.now(), type: e.pointerType };
       // User is interacting directly — cancel any programmatic camera transition
       this.transitionTarget = null;
     });
 
     dom.addEventListener('wheel', () => {
-      // User is zooming with wheel — cancel any programmatic camera transition immediately
       this.transitionTarget = null;
     }, { passive: true });
 
     dom.addEventListener('click', (e) => {
-      // If the pointer moved more than 5px between pointerdown and click,
-      // this was a drag/pan/zoom gesture — do NOT select anything!
-      const dragDist = Math.hypot(e.clientX - pointerDownPos.x, e.clientY - pointerDownPos.y);
-      if (dragDist > 5) return;
+      // Ignore drags / pans / pinches. Fingers wobble more than a mouse, so allow more slack on touch.
+      const slack = pointerDown.type === 'mouse' ? 5 : 14;
+      const dragDist = Math.hypot(e.clientX - pointerDown.x, e.clientY - pointerDown.y);
+      if (dragDist > slack) return;
 
-      const rect = dom.getBoundingClientRect();
-      _pointer.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
-      _pointer.y = -((e.clientY - rect.top) / rect.height) * 2 + 1;
-
-      _raycaster.setFromCamera(_pointer, this.camera);
+      this.setPointerFromEvent(e);
 
       // Geotag Placement Mode: pick coordinate on roof or terrain
       if (this.isGeotagModeActive) {
+        _raycaster.setFromCamera(_pointer, this.camera);
         const targets: THREE.Object3D[] = [];
         if (this.groundMesh) targets.push(this.groundMesh);
         this.realBuildingsGroup.traverse((c) => {
           if (c instanceof THREE.Mesh) targets.push(c);
         });
-
         const hits = _raycaster.intersectObjects(targets, false);
         if (hits.length > 0) {
           const point = hits[0].point;
           const coords = worldToLatLng(point.x, point.z);
-          this.callbacks.onGeotagPickPoint(coords.lat, coords.lng, Math.max(point.y + 1.5, 2));
+          this.callbacks.onGeotagPickPoint?.(coords.lat, coords.lng, Math.max(point.y + 1.5, 2));
           this.setGeotagMode(false);
         }
         return;
       }
 
-      // Normal mode
-      const hits = _raycaster.intersectObjects(this.interactiveMeshes, false);
-      if (hits.length > 0) {
-        let clickedDoc: GeotaggedDocument | null = null;
-        let clickedBuilding: BuildingPlot | null = null;
-
-        for (const hit of hits) {
-          let curr: THREE.Object3D | null = hit.object;
-          while (curr && curr !== this.scene) {
-            if (curr.userData?.type === 'document') {
-              clickedDoc = curr.userData.data;
-              break;
-            }
-            if (curr.userData?.type === 'building') {
-              let bData = this.buildings.find(
-                (b) => (b.number > 0 && b.number.toString() === curr?.userData?.housenumber) || b.id === curr?.userData?.id
-              );
-              if (!bData) {
-                const u = curr.userData;
-                const bNum = parseInt(u.housenumber) || 0;
-                bData = {
-                  id: u.id || `b-osm-${Math.random()}`,
-                  number: bNum,
-                  street: u.street || (bNum > 0 ? 'Chissin' : 'Chissin Block'),
-                  streetHe: u.street || (bNum > 0 ? 'רחוב חיסין' : 'מתחם רחוב חיסין'),
-                  centerCoordinates: {
-                    lat: u.center?.lat || 32.0738,
-                    lng: u.center?.lng || 34.7774,
-                    elevation: u.height,
-                  },
-                  height: u.height || 15,
-                  levels: u.levels || Math.max(Math.round((u.height || 15) / 3.4), 3),
-                  yearBuilt: 1936,
-                  architect: 'Arch. International Style',
-                  architectHe: 'אדריכלות הסגנון הבינלאומי (באוהאוס)',
-                  style: 'Bauhaus / International',
-                  descriptionHe: '',
-                  preservationStatus: 'Standard',
-                  width: 18,
-                  depth: 16,
-                  rotation: 0,
-                  hasCurvedBalcony: true,
-                  hasPilotis: true,
-                  hasRoofPergola: true,
-                };
-              }
-              clickedBuilding = bData;
-              this.highlightBuilding(curr);
-              break;
-            }
-            curr = curr.parent;
-          }
-          if (clickedDoc || clickedBuilding) break;
-        }
-
-        if (clickedDoc) {
-          this.callbacks.onSelectDocument(clickedDoc);
-          this.highlightPin(clickedDoc.id);
-          this.highlightBuilding(null);
-          return;
-        }
-
-        if (clickedBuilding) {
-          this.callbacks.onSelectBuilding(clickedBuilding);
-          return;
-        }
-      }
-
-      this.callbacks.onSelectDocument(null);
-      this.callbacks.onSelectBuilding(null);
-      this.highlightPin(null);
-      this.highlightBuilding(null);
+      const id = this.pickBuildingId();
+      const building = id ? BUILDINGS_BY_ID.get(id) ?? null : null;
+      this.selectBuilding(building);
+      this.callbacks.onSelectBuilding(building);
     });
 
     window.addEventListener('resize', this.handleResize);
+    // The container also changes size without a window resize (mobile address bar, panels).
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver = new ResizeObserver(() => this.handleResize());
+      this.resizeObserver.observe(this.container);
+    }
   }
 
   private handleResize = () => {
     if (!this.container || !this.renderer) return;
     const width = this.container.clientWidth;
     const height = this.container.clientHeight;
+    if (!width || !height) return;
     this.camera.aspect = width / height;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(width, height);
@@ -1213,6 +1090,7 @@ export class ChissinSceneManager {
 
   public dispose() {
     window.removeEventListener('resize', this.handleResize);
+    this.resizeObserver?.disconnect();
     cancelAnimationFrame(this.animFrameId);
     this.selectionHighlightBox?.dispose();
     this.controls.dispose();

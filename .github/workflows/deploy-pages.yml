@@ -35,6 +35,9 @@ jobs:
       - name: Type check
         run: bun run lint
 
+      - name: Unit tests
+        run: bun run test
+
       - name: Configure Pages
         id: pages
         uses: actions/configure-pages@v5

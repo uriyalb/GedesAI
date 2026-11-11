@@ -13,7 +13,6 @@ import {
   FileCheck2,
   Image as ImageIcon,
   Compass as CompassIcon,
-  Crosshair
 } from 'lucide-react';
 
 interface BottomDockProps {
@@ -25,8 +24,8 @@ interface BottomDockProps {
   onToggleTrees: () => void;
   isArchitecturalMode: boolean;
   onToggleArchitectural: () => void;
-  isGeotagMode: boolean;
-  onToggleGeotagMode: () => void;
+  /** Hide the dock entirely (e.g. while a bottom sheet is open on mobile). */
+  hidden?: boolean;
   lang: 'he' | 'en';
 }
 
@@ -39,11 +38,10 @@ export const BottomDock: React.FC<BottomDockProps> = ({
   onToggleTrees,
   isArchitecturalMode,
   onToggleArchitectural,
-  isGeotagMode,
-  onToggleGeotagMode,
+  hidden,
   lang,
 }) => {
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isCollapsed, setIsCollapsed] = useState(() => typeof window !== 'undefined' && window.innerWidth < 640);
   const [activeTab, setActiveTab] = useState<'camera' | 'filters' | 'layers'>('camera');
   const isHe = lang === 'he';
 
@@ -66,7 +64,11 @@ export const BottomDock: React.FC<BottomDockProps> = ({
   ];
 
   return (
-    <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-20 w-[95vw] max-w-[880px] pointer-events-none">
+    <div
+      className={`fixed bottom-[max(0.5rem,env(safe-area-inset-bottom))] sm:bottom-4 left-1/2 -translate-x-1/2 z-20 w-[calc(100vw-1rem)] max-w-[880px] pointer-events-none ${
+        hidden ? 'hidden sm:block' : ''
+      }`}
+    >
       
       {/* Collapse Toggle Tab Button */}
       <div className="flex justify-center mb-1">
@@ -93,7 +95,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
       {!isCollapsed && (
         <div className="pointer-events-auto bg-slate-900/95 border border-slate-700/90 rounded-2xl p-3 shadow-2xl text-white backdrop-blur-xl transition-all">
           
-          {/* Top row: Tab Switcher & Quick Geotag Action */}
+          {/* Top row: Tab Switcher */}
           <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-2.5 mb-2.5">
             <div className="flex items-center gap-1.5">
               <button
@@ -105,7 +107,8 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                 }`}
               >
                 <Camera className="w-3.5 h-3.5" />
-                <span>{isHe ? 'זוויות מבט' : 'Camera Angles'}</span>
+                <span className="sm:hidden">{isHe ? 'מבט' : 'Camera'}</span>
+                <span className="hidden sm:inline">{isHe ? 'זוויות מבט' : 'Camera Angles'}</span>
               </button>
               <button
                 onClick={() => setActiveTab('filters')}
@@ -116,7 +119,8 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                 }`}
               >
                 <Filter className="w-3.5 h-3.5" />
-                <span>{isHe ? 'סינון מסמכים' : 'Document Filters'}</span>
+                <span className="sm:hidden">{isHe ? 'סינון' : 'Filters'}</span>
+                <span className="hidden sm:inline">{isHe ? 'סינון מסמכים' : 'Document Filters'}</span>
               </button>
               <button
                 onClick={() => setActiveTab('layers')}
@@ -127,22 +131,10 @@ export const BottomDock: React.FC<BottomDockProps> = ({
                 }`}
               >
                 <Layers className="w-3.5 h-3.5" />
-                <span>{isHe ? 'שכבות מפה' : 'Map Layers'}</span>
+                <span className="sm:hidden">{isHe ? 'שכבות' : 'Layers'}</span>
+                <span className="hidden sm:inline">{isHe ? 'שכבות מפה' : 'Map Layers'}</span>
               </button>
             </div>
-
-            {/* Click-to-Pin Mode Toggle */}
-            <button
-              onClick={onToggleGeotagMode}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold transition-all border ${
-                isGeotagMode
-                  ? 'bg-amber-500 text-slate-950 border-amber-300 ring-2 ring-amber-400/50'
-                  : 'bg-slate-800 text-amber-300 border-amber-500/30 hover:bg-slate-700'
-              }`}
-            >
-              <Crosshair className="w-3.5 h-3.5" />
-              <span>{isGeotagMode ? (isHe ? 'מצב דקירה פעיל' : 'Pinning Active') : (isHe ? 'דקור על המפה' : 'Click to Pin')}</span>
-            </button>
           </div>
 
           {/* Tab 1: Camera Presets */}
@@ -187,7 +179,7 @@ export const BottomDock: React.FC<BottomDockProps> = ({
 
           {/* Tab 3: Layers & Visual Styling */}
           {activeTab === 'layers' && (
-            <div className="flex items-center gap-3">
+            <div className="flex items-center gap-2 overflow-x-auto scrollbar-none pb-1">
               <button
                 onClick={onToggleTrees}
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs border transition-all ${
