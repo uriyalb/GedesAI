@@ -10,7 +10,7 @@ interface AerialReferenceModalProps {
 const AERIAL_PHOTOS = [
   {
     id: 'aerial-1',
-    src: '/public/assets/aistudio/image_a2f14507.png',
+    src: `${import.meta.env.BASE_URL}assets/aistudio/image_a2f14507.png`,
     titleHe: 'מבט מפורט על רחוב חיסין וגינת חיסין',
     titleEn: 'Close-up: Chissin Street & Gan Chissin',
     coords: 'E: 179037.59, N: 664708.18, Height: 27.14 m',
@@ -18,7 +18,7 @@ const AERIAL_PHOTOS = [
   },
   {
     id: 'aerial-2',
-    src: '/public/assets/aistudio/image_5d1bb75d.png',
+    src: `${import.meta.env.BASE_URL}assets/aistudio/image_5d1bb75d.png`,
     titleHe: 'שדרות בן ציון ומפגש רחוב חיסין (דרום)',
     titleEn: 'Ben Zion Blvd & Chissin South Junction',
     coords: 'E: 178941.14, N: 664391.40, Height: 32.77 m',
@@ -26,7 +26,7 @@ const AERIAL_PHOTOS = [
   },
   {
     id: 'aerial-3',
-    src: '/public/assets/aistudio/image_63580cdb.png',
+    src: `${import.meta.env.BASE_URL}assets/aistudio/image_63580cdb.png`,
     titleHe: 'כיכר הבימה, היכל התרבות ובלוק חיסין ממזרח',
     titleEn: 'Habima Square & Chissin Block from East',
     coords: 'E: 179755.96, N: 665007.19, Height: 25.66 m',
@@ -34,7 +34,7 @@ const AERIAL_PHOTOS = [
   },
   {
     id: 'aerial-4',
-    src: '/public/assets/aistudio/image_59264e13.png',
+    src: `${import.meta.env.BASE_URL}assets/aistudio/image_59264e13.png`,
     titleHe: 'מבט מערבי לעבר כיכר הבימה ומגדל דיזנגוף',
     titleEn: 'Looking toward Habima & Dizengoff Tower',
     coords: 'E: 179288.00, N: 664111.09, Height: 34.50 m',
@@ -42,7 +42,7 @@ const AERIAL_PHOTOS = [
   },
   {
     id: 'aerial-5',
-    src: '/public/assets/aistudio/image_99b5fde7.png',
+    src: `${import.meta.env.BASE_URL}assets/aistudio/image_99b5fde7.png`,
     titleHe: 'מבט אווירי אורתוגונלי על בלוק חיסין',
     titleEn: 'Orthogonal Aerial Overview of Chissin Block',
     coords: 'E: 179467.15, N: 664741.85, Height: 25.75 m',
