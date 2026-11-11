@@ -1,7 +1,7 @@
 import React from 'react';
 import { User } from 'firebase/auth';
 import { TARGET_FOLDER_URL } from '../../services/drive.ts';
-import { MapPin, ExternalLink, LogOut, Layers, FileText, RefreshCw } from 'lucide-react';
+import { MapPin, ExternalLink, LogOut, Layers, FileText, RefreshCw, Camera } from 'lucide-react';
 
 interface NavbarProps {
   user: User | null;
@@ -14,6 +14,7 @@ interface NavbarProps {
   onSyncDrive: () => void;
   isSyncing: boolean;
   onOpenAerialReference: () => void;
+  onAddPhoto: () => void;
   lang: 'he' | 'en';
   onToggleLang: () => void;
 }
@@ -38,6 +39,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   onSyncDrive,
   isSyncing,
   onOpenAerialReference,
+  onAddPhoto,
   lang,
   onToggleLang,
 }) => {
@@ -75,6 +77,15 @@ export const Navbar: React.FC<NavbarProps> = ({
             <FileText className="w-4 h-4" />
             <span className="hidden md:inline">{isHe ? 'מסמכים' : 'Documents'}</span>
             <span className="px-1.5 text-[11px] font-bold bg-slate-700 text-slate-200 rounded-full">{docCount}</span>
+          </button>
+
+          <button
+            onClick={onAddPhoto}
+            className="flex items-center gap-1.5 h-9 px-2.5 text-xs sm:text-sm font-semibold rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950"
+            aria-label={isHe ? 'הוספת תמונה למפה' : 'Add a photo to the map'}
+          >
+            <Camera className="w-4 h-4" />
+            <span className="hidden md:inline">{isHe ? 'הוספת תמונה' : 'Add photo'}</span>
           </button>
 
           <button

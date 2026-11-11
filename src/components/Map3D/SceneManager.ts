@@ -17,8 +17,22 @@ const _pointer = new THREE.Vector2();
 
 export interface SceneCallbacks {
   onSelectBuilding: (building: BuildingPlot | null) => void;
+  /** Map-click in pick mode: position and scene height of the clicked surface + eye level. */
   onGeotagPickPoint?: (lat: number, lng: number, elevation: number) => void;
+  onSelectPhoto?: (docId: string) => void;
 }
+
+export interface PhotoMarker {
+  docId: string;
+  fileId: string;
+  lat: number;
+  lng: number;
+  /** Scene height of the camera position (y). */
+  y: number;
+  thumbnailLink?: string;
+}
+
+export type ThumbnailLoader = (fileId: string, thumbnailLink?: string) => Promise<ImageBitmap | null>;
 
 export class ChissinSceneManager {
   private container: HTMLElement;
@@ -35,6 +49,8 @@ export class ChissinSceneManager {
   private parksGroup = new THREE.Group();
   private treesGroup = new THREE.Group();
   private documentsGroup = new THREE.Group();
+  private photosGroup = new THREE.Group();
+  private photoKey = '';
   private groundMesh: THREE.Mesh | null = null;
   private selectionHighlightBox: THREE.BoxHelper | null = null;
 
@@ -136,6 +152,7 @@ export class ChissinSceneManager {
     this.scene.add(this.realBuildingsGroup);
     this.scene.add(this.treesGroup);
     this.scene.add(this.documentsGroup);
+    this.scene.add(this.photosGroup);
 
     // 9. Build real terrain, real OSM highways, and real building envelopes!
     this.buildTerrain();
@@ -652,6 +669,112 @@ export class ChissinSceneManager {
         this.interactiveMeshes.push(b);
       }
     });
+    // Photo bubbles first in the list so they win over buildings behind them
+    this.photosGroup.children.forEach((g) => g.traverse((c) => c.userData?.isPhotoBubble && this.interactiveMeshes.unshift(c)));
+  }
+
+  /**
+   * Floating photo bubbles at the place each photo was taken, with a stem down to the ground.
+   */
+  public setPhotoMarkers(markers: PhotoMarker[], loadThumb: ThumbnailLoader) {
+    const key = markers.map((m) => `${m.docId}:${m.lat.toFixed(6)}:${m.lng.toFixed(6)}:${m.y.toFixed(1)}`).join('|');
+    if (key === this.photoKey) return;
+    this.photoKey = key;
+    while (this.photosGroup.children.length) {
+      const o = this.photosGroup.children[0];
+      this.photosGroup.remove(o);
+      o.traverse((c) => {
+        if (c instanceof THREE.Sprite) {
+          c.material.map?.dispose();
+          c.material.dispose();
+        }
+      });
+      this.disposeObject(o);
+    }
+
+    const stemMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
+    const dotMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b, transparent: true, opacity: 0.6 });
+    for (const m of markers) {
+      const w = latLngToWorld(m.lat, m.lng);
+      const ground = groundHeight(w.x, w.z);
+      const camY = Math.max(m.y, ground + 0.5);
+      const bubbleY = camY + 5;
+
+      const g = new THREE.Group();
+      g.userData = { type: 'photo', docId: m.docId };
+
+      const stemH = Math.max(0.1, bubbleY - 2.6 - ground);
+      const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, stemH, 6), stemMat);
+      stem.position.set(w.x, ground + stemH / 2, w.z);
+      g.add(stem);
+      // camera position marker (useful for photos from balconies / roofs)
+      const eye = new THREE.Mesh(new THREE.SphereGeometry(0.45, 12, 8), stemMat);
+      eye.position.set(w.x, camY, w.z);
+      g.add(eye);
+      const dot = new THREE.Mesh(new THREE.CircleGeometry(1.2, 20).rotateX(-Math.PI / 2), dotMat);
+      dot.position.set(w.x, ground + 0.2, w.z);
+      g.add(dot);
+
+      const canvas = document.createElement('canvas');
+      canvas.width = canvas.height = 256;
+      const draw = (img: ImageBitmap | null) => {
+        const ctx = canvas.getContext('2d')!;
+        ctx.clearRect(0, 0, 256, 256);
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(128, 128, 118, 0, Math.PI * 2);
+        ctx.closePath();
+        ctx.fillStyle = '#1e293b';
+        ctx.fill();
+        ctx.clip();
+        if (img) {
+          const sc = Math.max(236 / img.width, 236 / img.height);
+          const iw = img.width * sc;
+          const ih = img.height * sc;
+          ctx.drawImage(img, 128 - iw / 2, 128 - ih / 2, iw, ih);
+        } else {
+          ctx.fillStyle = '#f59e0b';
+          ctx.font = 'bold 110px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText('📷', 128, 136);
+        }
+        ctx.restore();
+        ctx.lineWidth = 14;
+        ctx.strokeStyle = '#f59e0b';
+        ctx.beginPath();
+        ctx.arc(128, 128, 118, 0, Math.PI * 2);
+        ctx.stroke();
+      };
+      draw(null);
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, depthTest: false, transparent: true }));
+      sprite.scale.set(5.2, 5.2, 1);
+      sprite.position.set(w.x, bubbleY, w.z);
+      sprite.renderOrder = 20;
+      sprite.userData = { isPhotoBubble: true };
+      g.add(sprite);
+      this.photosGroup.add(g);
+
+      loadThumb(m.fileId, m.thumbnailLink).then((img) => {
+        if (!img) return;
+        draw(img);
+        tex.needsUpdate = true;
+        this.requestRender();
+      });
+    }
+    this.updateInteractiveMeshes();
+    this.requestRender();
+  }
+
+  public focusPoint(lat: number, lng: number, y: number) {
+    const w = latLngToWorld(lat, lng);
+    const look = new THREE.Vector3(w.x, y + 3, w.z);
+    const dir = this.camera.position.clone().sub(this.controls.target).normalize();
+    const pos = look.clone().add(dir.multiplyScalar(55));
+    pos.y = Math.max(pos.y, y + 20);
+    this.startCameraTransition(pos, look);
   }
 
   public setBuildings(buildings: BuildingPlot[]) {
@@ -796,14 +919,17 @@ export class ChissinSceneManager {
   }
 
   /** Returns the building id under the pointer (via a building mesh or a document pin). */
-  private pickBuildingId(): string | null {
+  private pickTarget(): { type: 'building' | 'photo'; id: string } | null {
     _raycaster.setFromCamera(_pointer, this.camera);
     const hits = _raycaster.intersectObjects(this.interactiveMeshes, false);
+    // Bubbles are drawn on top of everything, so give them priority over closer buildings
+    const photoHit = hits.find((h) => h.object.userData?.isPhotoBubble);
+    if (photoHit) return { type: 'photo', id: photoHit.object.parent!.userData.docId };
     for (const hit of hits) {
       let curr: THREE.Object3D | null = hit.object;
       while (curr && curr !== this.scene) {
-        if (curr.userData?.type === 'buildingPin') return curr.userData.buildingId;
-        if (curr.userData?.type === 'building') return curr.userData.id;
+        if (curr.userData?.type === 'buildingPin') return { type: 'building', id: curr.userData.buildingId };
+        if (curr.userData?.type === 'building') return { type: 'building', id: curr.userData.id };
         curr = curr.parent;
       }
     }
@@ -825,7 +951,7 @@ export class ChissinSceneManager {
       cancelAnimationFrame(hoverFrame);
       hoverFrame = requestAnimationFrame(() => {
         this.setPointerFromEvent(e);
-        dom.style.cursor = this.pickBuildingId() ? 'pointer' : 'default';
+        dom.style.cursor = this.pickTarget() ? 'pointer' : 'default';
       });
     });
 
@@ -861,13 +987,19 @@ export class ChissinSceneManager {
         if (hits.length > 0) {
           const point = hits[0].point;
           const coords = worldToLatLng(point.x, point.z);
-          this.callbacks.onGeotagPickPoint?.(coords.lat, coords.lng, Math.max(point.y + 1.5, 2));
+          // A click on the ground means eye level; on a roof / wall, just above that surface
+          this.callbacks.onGeotagPickPoint?.(coords.lat, coords.lng, point.y + 1.6);
           this.setGeotagMode(false);
         }
         return;
       }
 
-      const id = this.pickBuildingId();
+      const target = this.pickTarget();
+      if (target?.type === 'photo') {
+        this.callbacks.onSelectPhoto?.(target.id);
+        return;
+      }
+      const id = target?.id;
       const building = id ? BUILDINGS_BY_ID.get(id) ?? null : null;
       this.selectBuilding(building);
       this.callbacks.onSelectBuilding(building);

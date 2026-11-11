@@ -89,3 +89,18 @@ test('plan sheets with elevations are plans, not facades', () => {
 test('manual links saved with old OpenStreetMap ids still resolve', () => {
   assert.equal(title(resolveBuildingId('b-149523884')!), 'חיסין 20');
 });
+
+test('photo location: manual tag wins over GPS, GPS used automatically, 0/0 ignored', async () => {
+  const { photoLocationOf } = await import('./documents.ts');
+  const gps = { location: { latitude: 32.07348, longitude: 34.77761, altitude: 40 } };
+  assert.deepEqual(photoLocationOf({ imageMediaMetadata: gps }), { lat: 32.07348, lng: 34.77761, altitude: 40, source: 'exif' });
+  assert.deepEqual(
+    photoLocationOf({
+      imageMediaMetadata: gps,
+      properties: { gedesGeo: '1', gedesLat: '32.0736', gedesLng: '34.7772', gedesAlt: '23.5' },
+    }),
+    { lat: 32.0736, lng: 34.7772, altitude: 23.5, source: 'manual' }
+  );
+  assert.equal(photoLocationOf({ imageMediaMetadata: { location: { latitude: 0, longitude: 0 } } }), undefined);
+  assert.equal(photoLocationOf({}), undefined);
+});

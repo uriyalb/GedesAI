@@ -1,8 +1,8 @@
-import { GeotaggedDocument } from '../types/index.ts';
+import { GeotaggedDocument, PhotoLocation } from '../types/index.ts';
 import { ALL_BUILDINGS, BUILDINGS_BY_ID, buildingGroup, resolveBuildingId } from '../data/buildings.ts';
 import { FOLDER_LINKS, ROOT_AREA } from '../data/driveFolders.ts';
 import { buildBuildingIndex, linkFileToBuildings, extractYear, cleanDocumentTitle } from '../utils/addressMatch.ts';
-import { DriveFileItem, inferCategoryFromFilename, formatBytes, driveViewUrl } from './drive.ts';
+import { DriveFileItem, inferCategoryFromFilename, formatBytes, driveViewUrl, PHOTO_PROPS } from './drive.ts';
 import { CHISSIN_CENTER } from '../utils/geo.ts';
 
 const ASSIGNMENTS_KEY = 'gedes.docAssignments';
@@ -86,9 +86,27 @@ function dedupe(ids: string[]): string[] {
   return [...new Set(ids)];
 }
 
+/** Photo location: a manual tag saved on the file wins over the camera's GPS (EXIF). */
+export function photoLocationOf(file: Pick<DriveFileItem, 'properties' | 'imageMediaMetadata'>): PhotoLocation | undefined {
+  const p = file.properties;
+  if (p?.[PHOTO_PROPS.flag] === '1') {
+    const lat = parseFloat(p[PHOTO_PROPS.lat]);
+    const lng = parseFloat(p[PHOTO_PROPS.lng]);
+    const alt = parseFloat(p[PHOTO_PROPS.alt]);
+    if (isFinite(lat) && isFinite(lng)) return { lat, lng, altitude: isFinite(alt) ? alt : undefined, source: 'manual' };
+  }
+  const gps = file.imageMediaMetadata?.location;
+  if (gps && isFinite(gps.latitude) && isFinite(gps.longitude) && (gps.latitude !== 0 || gps.longitude !== 0)) {
+    return { lat: gps.latitude, lng: gps.longitude, altitude: gps.altitude, source: 'exif' };
+  }
+  return undefined;
+}
+
 export function driveFileToDocument(file: DriveFileItem, assignments: ManualAssignments): GeotaggedDocument {
   const title = cleanDocumentTitle(file.name);
-  const link = resolveFileLink(file, assignments[file.id]);
+  const link: ResolvedLink = file.outsideCollection
+    ? { buildingIds: [], areaHe: 'תמונה מתויגת מחוץ לאוסף', areaEn: 'Tagged photo outside the collection' }
+    : resolveFileLink(file, assignments[file.id]);
   const primary = link.buildingIds.length ? BUILDINGS_BY_ID.get(link.buildingIds[0]) : undefined;
   const baseName = file.name.replace(/\.[^/.]{1,5}$/, '');
   const year = extractYear(baseName) || extractYear(file.folderPath.join(' '));
@@ -126,6 +144,9 @@ export function driveFileToDocument(file: DriveFileItem, assignments: ManualAssi
     descriptionHe: file.description || '',
     gushHelka: gh ? `גוש ${gh.gush} חלקה ${gh.helka}` : undefined,
     isDriveSynced: true,
+    photoLocation: photoLocationOf(file),
+    canEdit: file.capabilities?.canEdit,
+    inCollection: !file.outsideCollection,
   };
 }
 
