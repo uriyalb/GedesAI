@@ -6,9 +6,9 @@ import { REAL_HIGHWAYS } from '../../data/realWorldBlock.ts';
 import { GIS_CONTEXT } from '../../data/gisContext.ts';
 import { groundHeight } from '../../utils/terrain.ts';
 import { latLngToWorld, worldToLatLng } from '../../utils/geo.ts';
-import { ALL_BUILDINGS, BUILDINGS_BY_ID } from '../../data/buildings.ts';
+import { ALL_BUILDINGS, BUILDINGS_BY_ID, effectiveTop } from '../../data/buildings.ts';
 import { getFacadeAtlas, whiteUV } from '../../utils/facadeAtlas.ts';
-import { MeshBuilder, type P2 } from './meshBuilder.ts';
+import { MeshBuilder, ringArea, type P2 } from './meshBuilder.ts';
 import { buildBuilding, type ModelBuilding } from './buildingModel.ts';
 import { Site, buildCars, buildFences, buildGardenFeatures, buildGround, buildVegetation, paintGround, skyTexture } from './environment.ts';
 
@@ -234,17 +234,21 @@ export class ChissinSceneManager {
       name: b.name,
       preserved: !!b.preservation,
     }));
-    const context: ModelBuilding[] = GIS_CONTEXT.map((c, i) => ({
+    const context: ModelBuilding[] = GIS_CONTEXT.map((c, i) => {
+      const parts = c.p.map((rings) => rings.map(unpack));
+      const area = parts.reduce((s, p) => s + Math.abs(ringArea(p[0])), 0);
+      return {
       id: `c-${i}`,
-      parts: c.p.map((rings) => rings.map(unpack)),
+      parts,
       roofMean: c.rm,
-      top: c.rx,
+      top: effectiveTop(area, c.rm, c.rx),
       floors: c.f,
       year: c.y,
       pilotis: c.pl === 1,
       kind: c.k,
       name: c.n,
-    }));
+      };
+    });
 
     const site = new Site([...block, ...context].flatMap((b) => b.parts.map((p) => p[0])));
     this.site = site;

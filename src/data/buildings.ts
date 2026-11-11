@@ -55,6 +55,18 @@ const KIND_EN: Record<string, string> = {
   'מבנה בבנייה': 'Under construction',
 };
 
+/**
+ * Top height to model for a building (m above the ground). The municipal survey records the highest point
+ * over each footprint; where a tower stands on a large podium that is stored as one footprint (Dizengoff
+ * Center's mall), that point belongs to the tower - which is a separate building in the data - so the podium
+ * would be extruded to the tower's height. Large footprints whose top is far above their mean roof get the
+ * mean roof level plus room for roof structures instead.
+ */
+export function effectiveTop(footprintM2: number, roofMean: number, top: number): number {
+  if (footprintM2 > 2500 && top > roofMean * 1.8 && top - roofMean > 15) return roofMean + 4;
+  return top;
+}
+
 /** Area-weighted centroid of a polygon ring given as [lat, lng] pairs. */
 function ringCentroid(ring: [number, number][]): { lat: number; lng: number; area: number } {
   let a = 0;
@@ -104,8 +116,10 @@ export const ALL_BUILDINGS: BuildingPlot[] = (() => {
     const name = g.n || undefined;
     // Heights above the ground from the municipal surface model: top of the roof structures and mean roof level.
     // (The older "h" also counts basements and the lowest ground point, so it overstates what stands above the street.)
-    const top = g.rx ?? Math.max(2.5, g.h - 2.5);
-    const roofHeight = g.rm ?? Math.max(2.2, top - 2.6);
+    const rawTop = g.rx ?? Math.max(2.5, g.h - 2.5);
+    const roofHeight = g.rm ?? Math.max(2.2, rawTop - 2.6);
+    const footprint = g.p.reduce((s, poly) => s + ringCentroid(poly[0]).area * 111320 * 94330, 0);
+    const top = effectiveTop(footprint, roofHeight, rawTop);
     const w = latLngToWorld(best.lat, best.lng);
     const base = Number(groundHeight(w.x, w.z).toFixed(2));
     const titleHe = primary ? formatAddressHe(primary) : '';
