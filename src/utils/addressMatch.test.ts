@@ -6,11 +6,15 @@ import { buildBuildingIndex, findBuildingsInText, linkFileToBuildings, extractYe
 const index = buildBuildingIndex(ALL_BUILDINGS);
 const titles = (text: string) => findBuildingsInText(text, index).map((m) => BUILDINGS_BY_ID.get(m.buildingId)!.titleHe);
 
-test('every building is a separate entity with an address', () => {
+test('every building is a separate entity with a title', () => {
   const ids = new Set(ALL_BUILDINGS.map((b) => b.id));
   assert.equal(ids.size, ALL_BUILDINGS.length);
+  // Every building has a title; the only ones without a street address are kiosks,
+  // bus stops and public structures, titled after the nearest address.
+  assert.ok(ALL_BUILDINGS.every((b) => b.titleHe.length > 0));
   const unaddressed = ALL_BUILDINGS.filter((b) => b.addresses.length === 0);
-  assert.equal(unaddressed.length, 0);
+  assert.ok(unaddressed.every((b) => b.kind || b.name), unaddressed.map((b) => b.id).join(','));
+  assert.ok(ALL_BUILDINGS.filter((b) => b.addresses.length > 0).length > 250);
 });
 
 test('normalizeText strips quotes and separators', () => {

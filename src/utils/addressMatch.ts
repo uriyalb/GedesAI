@@ -186,8 +186,25 @@ export function linkFileToBuildings(fileName: string, folderPath: string[], inde
   return { buildingIds: [], source: null };
 }
 
-/** Extracts a plausible document year (1900–2029) from a file name. */
+/**
+ * Extracts a plausible document year (1900–2029) from a file name.
+ * A full date ("13-9-1945", "16.9.1935") wins; otherwise a standalone 4-digit year.
+ * Digits glued to letters (archive hashes such as "1F26986A_…") are ignored.
+ */
 export function extractYear(text: string): number {
-  const m = text.match(/(?<!\d)(19\d{2}|20[0-2]\d)(?!\d)/);
+  const date = text.match(/(?<![\p{L}\d])\d{1,2}[-./]\d{1,2}[-./](19\d{2}|20[0-2]\d)(?![\p{L}\d])/u);
+  if (date) return parseInt(date[1], 10);
+  const m = text.match(/(?<![\p{L}\d])(19\d{2}|20[0-2]\d)(?![\p{L}\d])/u);
   return m ? parseInt(m[1], 10) : 0;
+}
+
+/**
+ * Makes archive file names readable: drops the extension and the trailing
+ * "- 4BBC9E65_01041339" style archive hash/id.
+ */
+export function cleanDocumentTitle(fileName: string): string {
+  return fileName
+    .replace(/\.[^/.]{1,5}$/, '')
+    .replace(/\s+-\s+[0-9A-F]{8}_[^\s].*$/, '')
+    .trim();
 }

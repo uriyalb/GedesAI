@@ -45,6 +45,16 @@ export const BuildingInfoCard: React.FC<BuildingInfoCardProps> = ({
 }) => {
   const isHe = lang === 'he';
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [limit, setLimit] = useState(30);
+
+  // Oldest first; documents without a known year at the end
+  const sortedDocs = useMemo(
+    () =>
+      [...associatedDocs].sort(
+        (a, b) => (a.year || 9999) - (b.year || 9999) || a.titleHe.localeCompare(b.titleHe, 'he')
+      ),
+    [associatedDocs]
+  );
   const Chevron = isHe ? ChevronLeft : ChevronRight;
 
   const parcels = useMemo(() => {
@@ -166,7 +176,7 @@ export const BuildingInfoCard: React.FC<BuildingInfoCardProps> = ({
               </p>
             ) : (
               <ul className="space-y-1.5">
-                {associatedDocs.map((doc) => (
+                {sortedDocs.slice(0, limit).map((doc) => (
                   <li key={doc.id}>
                     <button
                       onClick={() => onOpenDoc(doc)}
@@ -192,6 +202,18 @@ export const BuildingInfoCard: React.FC<BuildingInfoCardProps> = ({
                     </button>
                   </li>
                 ))}
+                {sortedDocs.length > limit && (
+                  <li>
+                    <button
+                      onClick={() => setLimit((l) => l + 50)}
+                      className="w-full py-2 rounded-xl border border-slate-700 text-xs text-slate-300 hover:bg-slate-800"
+                    >
+                      {isHe
+                        ? `הצג עוד (${sortedDocs.length - limit} נוספים)`
+                        : `Show more (${sortedDocs.length - limit} more)`}
+                    </button>
+                  </li>
+                )}
               </ul>
             )}
           </div>
@@ -270,7 +292,7 @@ const DocumentPicker: React.FC<{
     const nq = normalizeText(q);
     return docs.filter(
       (d) =>
-        (!onlyUnlinked || !d.buildingId) &&
+        (!onlyUnlinked || (!d.buildingId && !d.areaHe)) &&
         (!nq || nq.split(' ').every((t) => normalizeText(`${d.titleHe} ${d.drivePath ?? ''}`).includes(t)))
     );
   }, [docs, q, onlyUnlinked]);

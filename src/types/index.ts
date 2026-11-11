@@ -29,6 +29,9 @@ export interface GeotaggedDocument {
   /** All buildings referenced by the document (e.g. a corner plan covering two addresses). */
   buildingIds?: string[];
   matchedBy?: DocumentMatchSource;
+  /** Public space / plan area the document describes when it isn't about a single building. */
+  areaHe?: string;
+  areaEn?: string;
   coordinates: GeotagCoordinates;
   /** Year mentioned in the file name, 0 when unknown. */
   year: number;
@@ -81,6 +84,14 @@ export interface BuildingPlot {
   street: string;
   streetHe: string;
   name?: string;
+  /** Building type from the GIS when it isn't a regular building (e.g. "תחנת אוטובוס"). */
+  kind?: string;
+  /** Footprint polygons, each [outer ring, ...holes] of [lat, lng]. */
+  polygons: [number, number][][][];
+  /** Ground elevation under the building relative to the scene origin (m). */
+  baseElevation: number;
+  /** Open ground floor on columns (pilotis). */
+  pilotis: boolean;
   centerCoordinates: GeotagCoordinates;
   height: number;
   levels: number;
