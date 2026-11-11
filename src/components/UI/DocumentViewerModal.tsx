@@ -20,6 +20,8 @@ import {
   Info,
   FolderOpen,
   AlertTriangle,
+  MapPin,
+  Camera,
   Trees,
   Link2,
 } from 'lucide-react';
@@ -32,6 +34,8 @@ interface DocumentViewerModalProps {
   onClose: () => void;
   onShowBuilding: (b: BuildingPlot) => void;
   onAssign: (doc: GeotaggedDocument, buildingId: string | null) => void;
+  onTagPhoto: (doc: GeotaggedDocument) => void;
+  onShowPhotoLocation: (doc: GeotaggedDocument) => void;
   lang: 'he' | 'en';
 }
 
@@ -67,6 +71,8 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
   onClose,
   onShowBuilding,
   onAssign,
+  onTagPhoto,
+  onShowPhotoLocation,
   lang,
 }) => {
   const isHe = lang === 'he';
@@ -236,6 +242,26 @@ export const DocumentViewerModal: React.FC<DocumentViewerModalProps> = ({
             <Info className="w-3.5 h-3.5" />
             <span>{isHe ? 'פרטים' : 'Details'}</span>
           </button>
+          {doc.mimeType?.startsWith('image/') && doc.fileId && (
+            <>
+              {doc.photoLocation && (
+                <button
+                  onClick={() => onShowPhotoLocation(doc)}
+                  className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs shrink-0 border border-amber-500/50 text-amber-300 hover:bg-amber-500/10"
+                >
+                  <MapPin className="w-3.5 h-3.5" />
+                  <span>{isHe ? 'הצג על המפה' : 'Show on map'}</span>
+                </button>
+              )}
+              <button
+                onClick={() => onTagPhoto(doc)}
+                className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs shrink-0 bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold"
+              >
+                <Camera className="w-3.5 h-3.5" />
+                <span>{doc.photoLocation ? (isHe ? 'שנה מיקום' : 'Move') : isHe ? 'דקור על המפה' : 'Pin on map'}</span>
+              </button>
+            </>
+          )}
           {blob && (
             <button
               onClick={handleDownload}

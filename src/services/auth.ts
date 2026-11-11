@@ -92,6 +92,26 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
   }
 };
 
+/**
+ * Asks the user for permission to edit Drive files (needed to save a photo's map location on the file).
+ * Requested only when the user tags a photo, so viewers keep the read-only permission.
+ */
+export const requestDriveWriteAccess = async (): Promise<string> => {
+  const writeProvider = new GoogleAuthProvider();
+  writeProvider.addScope('https://www.googleapis.com/auth/drive.readonly');
+  writeProvider.addScope('https://www.googleapis.com/auth/drive');
+  isSigningIn = true;
+  try {
+    const result = await signInWithPopup(auth, writeProvider);
+    const credential = GoogleAuthProvider.credentialFromResult(result);
+    if (!credential?.accessToken) throw new Error('No access token returned');
+    setAccessToken(credential.accessToken);
+    return credential.accessToken;
+  } finally {
+    isSigningIn = false;
+  }
+};
+
 export const getAccessToken = (): string | null => {
   if (cachedAccessToken && cachedAccessToken.expiresAt <= Date.now()) {
     setAccessToken(null);

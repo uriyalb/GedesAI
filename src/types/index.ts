@@ -50,6 +50,20 @@ export interface GeotaggedDocument {
   gushHelka?: string; // גוש וחלקה
   permitNumber?: string;
   isDriveSynced?: boolean;
+  /** Where a photo was taken: from the image's GPS data (EXIF) or tagged manually on the map. */
+  photoLocation?: PhotoLocation;
+  /** The signed-in user can edit the Drive file (and therefore tag it on the map). */
+  canEdit?: boolean;
+  /** The file is inside the shared collection folder. */
+  inCollection?: boolean;
+}
+
+export interface PhotoLocation {
+  lat: number;
+  lng: number;
+  /** Metres above sea level of the camera; undefined = at eye level above the ground. */
+  altitude?: number;
+  source: 'exif' | 'manual';
 }
 
 export interface BuildingAddress {

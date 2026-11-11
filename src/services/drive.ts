@@ -27,9 +27,26 @@ export interface DriveFileItem {
   /** Ids of those sub-folders (same order as folderPath). */
   folderIds: string[];
   shortcutDetails?: { targetId: string; targetMimeType: string };
+  /** Photo metadata extracted by Drive (EXIF), incl. GPS location when the camera recorded it. */
+  imageMediaMetadata?: {
+    location?: { latitude: number; longitude: number; altitude?: number };
+    time?: string;
+  };
+  /** Custom Drive properties – the app stores manual photo locations here. */
+  properties?: Record<string, string>;
+  capabilities?: { canEdit?: boolean };
+  /** A tagged photo that lives outside the shared collection folder. */
+  outsideCollection?: boolean;
 }
 
 export class DriveAuthError extends Error {}
+/** The access token doesn't include permission to edit Drive files. */
+export class DriveScopeError extends Error {}
+/** The signed-in user can't edit this file. */
+export class DrivePermissionError extends Error {}
+
+/** Keys of the Drive file properties used to store a manual photo location. */
+export const PHOTO_PROPS = { flag: 'gedesGeo', lat: 'gedesLat', lng: 'gedesLng', alt: 'gedesAlt' } as const;
 
 /**
  * Categorize a file from its name (and folder names) or MIME type.
@@ -82,7 +99,8 @@ async function driveFetch(url: string, token: string, init?: RequestInit): Promi
 }
 
 const FILE_FIELDS =
-  'id,name,mimeType,webViewLink,webContentLink,thumbnailLink,iconLink,size,createdTime,modifiedTime,description,shortcutDetails';
+  'id,name,mimeType,webViewLink,webContentLink,thumbnailLink,iconLink,size,createdTime,modifiedTime,description,shortcutDetails,' +
+  'imageMediaMetadata(location,time),properties,capabilities(canEdit)';
 
 async function listChildren(folderId: string, token: string): Promise<Omit<DriveFileItem, 'folderPath'>[]> {
   const items: Omit<DriveFileItem, 'folderPath'>[] = [];
@@ -192,4 +210,134 @@ export function drivePreviewUrl(fileId: string): string {
 
 export function driveViewUrl(fileId: string): string {
   return `https://drive.google.com/file/d/${fileId}/view`;
+}
+
+async function listQuery(q: string, token: string, extra: Record<string, string> = {}, max = 500): Promise<DriveFileItem[]> {
+  const out: DriveFileItem[] = [];
+  let pageToken: string | undefined;
+  do {
+    const params = new URLSearchParams({
+      q,
+      fields: `nextPageToken, files(${FILE_FIELDS})`,
+      pageSize: String(Math.min(max, 200)),
+      supportsAllDrives: 'true',
+      includeItemsFromAllDrives: 'true',
+      ...extra,
+    });
+    if (pageToken) params.set('pageToken', pageToken);
+    const res = await driveFetch(`${API}/files?${params}`, token);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err?.error?.message || `Drive API error ${res.status}`);
+    }
+    const data = await res.json();
+    out.push(...(data.files || []).map((f: any) => ({ ...f, folderPath: [], folderIds: [] })));
+    pageToken = data.nextPageToken;
+  } while (pageToken && out.length < max);
+  return out;
+}
+
+/** Photos tagged on the map that live anywhere in Drive (not only in the collection folder). */
+export async function fetchTaggedPhotos(): Promise<DriveFileItem[]> {
+  const token = getAccessToken();
+  if (!token) return [];
+  try {
+    const files = await listQuery(
+      `properties has { key='${PHOTO_PROPS.flag}' and value='1' } and trashed = false`,
+      token
+    );
+    return files.map((f) => ({ ...f, outsideCollection: true }));
+  } catch (e) {
+    console.warn('Tagged photo query failed', e);
+    return [];
+  }
+}
+
+/** Searches the user's Drive for images, newest first. */
+export async function searchDriveImages(text: string): Promise<DriveFileItem[]> {
+  const token = getAccessToken();
+  if (!token) throw new DriveAuthError('Not signed in');
+  const clauses = ["mimeType contains 'image/'", 'trashed = false'];
+  const t = text.trim().replace(/\\/g, '').replace(/'/g, "\\'");
+  if (t) clauses.push(`name contains '${t}'`);
+  return listQuery(clauses.join(' and '), token, { orderBy: 'modifiedTime desc' }, 60);
+}
+
+export interface PhotoLocationInput {
+  lat: number;
+  lng: number;
+  /** Metres above sea level of the camera position. */
+  altitude: number;
+}
+
+/**
+ * Saves (or clears, with null) the map location of a photo as custom properties on the Drive file,
+ * so every user with access to the file sees it on the map.
+ */
+export async function savePhotoLocation(fileId: string, loc: PhotoLocationInput | null): Promise<Record<string, string>> {
+  const token = getAccessToken();
+  if (!token) throw new DriveAuthError('Not signed in');
+  const properties = loc
+    ? {
+        [PHOTO_PROPS.flag]: '1',
+        [PHOTO_PROPS.lat]: loc.lat.toFixed(7),
+        [PHOTO_PROPS.lng]: loc.lng.toFixed(7),
+        [PHOTO_PROPS.alt]: loc.altitude.toFixed(1),
+      }
+    : { [PHOTO_PROPS.flag]: null, [PHOTO_PROPS.lat]: null, [PHOTO_PROPS.lng]: null, [PHOTO_PROPS.alt]: null };
+  const res = await driveFetch(`${API}/files/${fileId}?supportsAllDrives=true&fields=properties`, token, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ properties }),
+  });
+  if (res.ok) return (await res.json()).properties || {};
+  const err = await res.json().catch(() => ({}));
+  const reason = err?.error?.errors?.[0]?.reason || err?.error?.details?.[0]?.reason || '';
+  const msg: string = err?.error?.message || `Drive API error ${res.status}`;
+  if (res.status === 403 && /insufficient|scope/i.test(reason + msg)) throw new DriveScopeError(msg);
+  if (res.status === 403 || res.status === 404) throw new DrivePermissionError(msg);
+  throw new Error(msg);
+}
+
+const thumbCache = new Map<string, Promise<ImageBitmap | null>>();
+
+/** Loads a small version of a Drive image for map bubbles (cached). */
+export function loadImageThumbnail(fileId: string, thumbnailLink?: string): Promise<ImageBitmap | null> {
+  if (!thumbCache.has(fileId)) {
+    thumbCache.set(
+      fileId,
+      (async () => {
+        let blob: Blob | null = null;
+        if (thumbnailLink) {
+          try {
+            const r = await fetch(thumbnailLink.replace(/=s\d+$/, '=s320'), { referrerPolicy: 'no-referrer' });
+            if (r.ok && (r.headers.get('content-type') || '').startsWith('image/')) blob = await r.blob();
+          } catch {
+            /* fall back to the API */
+          }
+        }
+        if (!blob) {
+          try {
+            blob = await downloadDriveFile(fileId, 'image/*');
+          } catch {
+            return null;
+          }
+        }
+        try {
+          const full = await createImageBitmap(blob);
+          const scale = Math.min(1, 320 / Math.max(full.width, full.height));
+          if (scale === 1) return full;
+          const canvas = document.createElement('canvas');
+          canvas.width = Math.round(full.width * scale);
+          canvas.height = Math.round(full.height * scale);
+          canvas.getContext('2d')!.drawImage(full, 0, 0, canvas.width, canvas.height);
+          full.close();
+          return await createImageBitmap(canvas);
+        } catch {
+          return null;
+        }
+      })()
+    );
+  }
+  return thumbCache.get(fileId)!;
 }

@@ -1,7 +1,21 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { User } from 'firebase/auth';
-import { initAuth, googleSignIn, logout, getAccessToken } from './services/auth.ts';
-import { fetchDriveFolderFiles, DriveFileItem, TARGET_FOLDER_ID } from './services/drive.ts';
+import { initAuth, googleSignIn, logout, getAccessToken, requestDriveWriteAccess } from './services/auth.ts';
+import {
+  fetchDriveFolderFiles,
+  fetchTaggedPhotos,
+  DriveFileItem,
+  TARGET_FOLDER_ID,
+  savePhotoLocation,
+  loadImageThumbnail,
+  DriveScopeError,
+  DrivePermissionError,
+} from './services/drive.ts';
+import { PhotoTagModal, PhotoCandidate, PickedPoint, candidateFromDoc } from './components/UI/PhotoTagModal.tsx';
+import { PhotoMarker } from './components/Map3D/SceneManager.ts';
+import { latLngToWorld } from './utils/geo.ts';
+import { groundHeight } from './utils/terrain.ts';
+import { TERRAIN } from './data/terrain.ts';
 import {
   driveFileToDocument,
   documentBelongsTo,
@@ -66,6 +80,11 @@ export default function App() {
   const [isDrawerOpen, setIsDrawerOpen] = useState<boolean>(false);
   const [isAerialModalOpen, setIsAerialModalOpen] = useState<boolean>(false);
 
+  // Photo tagging
+  const [photoTag, setPhotoTag] = useState<{ initial: PhotoCandidate | null; key: number } | null>(null);
+  const [pickMode, setPickMode] = useState(false);
+  const [pickedPoint, setPickedPoint] = useState<PickedPoint | null>(null);
+
   const sceneManagerRef = useRef<ChissinSceneManager | null>(null);
   const langRef = useRef(lang);
   langRef.current = lang;
@@ -81,7 +100,10 @@ export default function App() {
         setMessage(he ? 'פג תוקף ההתחברות ל-Google Drive. התחבר מחדש כדי לטעון את המסמכים.' : 'Your Google Drive session expired. Sign in again to load documents.');
         return;
       }
-      setDriveFiles(res.files);
+      // Photos tagged on the map that live outside the collection folder
+      const tagged = await fetchTaggedPhotos();
+      const ids = new Set(res.files.map((f) => f.id));
+      setDriveFiles([...res.files, ...tagged.filter((f) => !ids.has(f.id))]);
       if (res.error) {
         setMessage(
           (he ? 'שגיאה בטעינת התיקייה: ' : 'Error loading the folder: ') +
@@ -183,6 +205,73 @@ export default function App() {
     }
   };
 
+  // ---- Photos on the map ----
+  const photoMarkers: PhotoMarker[] = useMemo(
+    () =>
+      documents
+        .filter((d) => d.photoLocation && d.fileId)
+        .map((d) => {
+          const { lat, lng, altitude } = d.photoLocation!;
+          const w = latLngToWorld(lat, lng);
+          const ground = groundHeight(w.x, w.z);
+          // Camera altitude (m above sea level) -> scene height; GPS altitudes can be noisy, keep sensible bounds
+          let y = altitude !== undefined ? altitude - TERRAIN.ref : ground + 1.6;
+          if (y < ground || y > ground + 150) y = ground + 1.6;
+          return { docId: d.id, fileId: d.fileId!, lat, lng, y, thumbnailLink: d.thumbnailUrl };
+        }),
+    [documents]
+  );
+
+  const openPhotoTag = (initial: PhotoCandidate | null = null) => {
+    setPickedPoint(null);
+    setPickMode(false);
+    setPhotoTag({ initial, key: Date.now() });
+  };
+
+  /** Writes the location on the Drive file, asking for edit permission once if needed. */
+  const writePhotoLocation = async (fileId: string, loc: { lat: number; lng: number; altitude: number } | null) => {
+    try {
+      return await savePhotoLocation(fileId, loc);
+    } catch (e) {
+      if (e instanceof DriveScopeError) {
+        await requestDriveWriteAccess();
+        return await savePhotoLocation(fileId, loc);
+      }
+      if (e instanceof DrivePermissionError) {
+        throw new Error(
+          isHe
+            ? 'אין לך הרשאת עריכה לקובץ הזה ב-Google Drive, ולכן אי אפשר לשמור עליו מיקום. בקש מבעל הקובץ הרשאת עריכה.'
+            : "You don't have edit access to this file in Google Drive, so its location can't be saved. Ask the owner for edit access."
+        );
+      }
+      throw e;
+    }
+  };
+
+  const updateFileProperties = (photo: PhotoCandidate, properties: Record<string, string>) => {
+    setDriveFiles((prev) => {
+      const exists = prev.some((f) => f.id === photo.fileId);
+      if (exists) return prev.map((f) => (f.id === photo.fileId ? { ...f, properties } : f));
+      if (photo.driveFile) return [...prev, { ...photo.driveFile, properties, outsideCollection: true }];
+      return prev;
+    });
+  };
+
+  const handleSavePhoto = async (photo: PhotoCandidate, loc: { lat: number; lng: number; altitude: number }) => {
+    const properties = await writePhotoLocation(photo.fileId, loc);
+    updateFileProperties(photo, properties);
+    setPhotoTag(null);
+    const w = latLngToWorld(loc.lat, loc.lng);
+    sceneManagerRef.current?.focusPoint(loc.lat, loc.lng, Math.max(loc.altitude - TERRAIN.ref, groundHeight(w.x, w.z)));
+    setMessage(isHe ? `התמונה "${photo.name}" נדקרה על המפה` : `"${photo.name}" pinned on the map`);
+  };
+
+  const handleRemovePhoto = async (photo: PhotoCandidate) => {
+    const properties = await writePhotoLocation(photo.fileId, null);
+    updateFileProperties(photo, properties);
+    setPhotoTag(null);
+  };
+
   const showBuilding = (b: BuildingPlot) => {
     setSelectedBuilding(b);
     sceneManagerRef.current?.focusBuilding(b);
@@ -204,6 +293,7 @@ export default function App() {
         onSyncDrive={loadDriveFiles}
         isSyncing={isSyncingDrive}
         onOpenAerialReference={() => setIsAerialModalOpen(true)}
+        onAddPhoto={() => openPhotoTag()}
         lang={lang}
         onToggleLang={() => setLang(isHe ? 'en' : 'he')}
       />
@@ -222,6 +312,19 @@ export default function App() {
           showTrees={showTrees}
           isArchitecturalMode={isArchitecturalMode}
           sceneManagerRef={sceneManagerRef}
+          photoMarkers={photoMarkers}
+          loadPhotoThumb={loadImageThumbnail}
+          onSelectPhoto={(docId) => {
+            const d = documents.find((x) => x.id === docId);
+            if (d) setViewingDoc(d);
+          }}
+          pickMode={pickMode}
+          onPickPoint={(lat, lng, y) => {
+            setPickedPoint({ lat, lng, y });
+            setPickMode(false);
+          }}
+          onCancelPick={() => setPickMode(false)}
+          lang={lang}
         />
       </main>
 
@@ -291,6 +394,41 @@ export default function App() {
             showBuilding(b);
           }}
           onAssign={handleAssign}
+          onTagPhoto={(doc) => {
+            setViewingDoc(null);
+            openPhotoTag(candidateFromDoc(doc));
+          }}
+          onShowPhotoLocation={(doc) => {
+            const m = photoMarkers.find((x) => x.docId === doc.id);
+            if (!m) return;
+            setViewingDoc(null);
+            setIsDrawerOpen(false);
+            sceneManagerRef.current?.focusPoint(m.lat, m.lng, m.y);
+          }}
+          lang={lang}
+        />
+      )}
+
+      {photoTag && (
+        <PhotoTagModal
+          key={photoTag.key}
+          documents={documents}
+          initial={photoTag.initial}
+          picked={pickedPoint}
+          hidden={pickMode}
+          isSignedIn={hasDriveToken}
+          onLogin={handleLogin}
+          onPickOnMap={() => {
+            setSelectedBuilding(null);
+            setIsDrawerOpen(false);
+            setPickMode(true);
+          }}
+          onSave={handleSavePhoto}
+          onRemove={handleRemovePhoto}
+          onClose={() => {
+            setPhotoTag(null);
+            setPickMode(false);
+          }}
           lang={lang}
         />
       )}
