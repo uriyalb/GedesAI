@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { BUILDINGS_BY_ID } from '../data/buildings.ts';
+import { ALL_BUILDINGS, BUILDINGS_BY_ID, buildingGroup, resolveBuildingId } from '../data/buildings.ts';
 import { resolveFileLink, documentBelongsTo, driveFileToDocument } from './documents.ts';
 import { inferCategoryFromFilename } from './drive.ts';
 import { extractYear, cleanDocumentTitle } from '../utils/addressMatch.ts';
@@ -10,6 +10,8 @@ const CHISSIN_4 = '1qBW4yqwDW6MIna5z3DhTIB7VlebgUmbV';
 const METRO = '1-RseJh-SxsnOqoIJ8xLvpeECuQ8YWwMr';
 const HABIMA_HOUSE = '11QM2bLHsnyCfrdhWOTtTptECzkeHfpOv';
 const title = (id: string) => BUILDINGS_BY_ID.get(id)!.titleHe;
+const at = (street: string, n: number, entrance = '') =>
+  ALL_BUILDINGS.find((b) => b.addresses.some((a) => a.street === street && a.number === n && a.entrance === entrance))!.id;
 
 test('files in an address folder link to that building', () => {
   const r = resolveFileLink({
@@ -32,9 +34,10 @@ test('the "חיסין 4" folder belongs to the Ben Zion 3 / Chissin 4א-ג build
     folderPath: ['חיסין 4', 'בדיקות חומרים'],
     folderIds: [CHISSIN_4, '1Vp6T_IlR3k8oHI5XXIrjt0uQfUlZtCZ7'],
   });
-  assert.deepEqual(r.buildingIds, ['b-495363269']);
-  const b = BUILDINGS_BY_ID.get('b-495363269')!;
+  assert.equal(r.buildingIds.length, 1);
+  const b = BUILDINGS_BY_ID.get(r.buildingIds[0])!;
   assert.ok(b.addresses.some((a) => a.street === 'בן ציון' && a.number === 3));
+  assert.ok(!b.addresses.some((a) => a.street === 'חיסין' && a.number === 4 && a.entrance === ''));
 });
 
 test('Ben Zion / Tarsat sub-folders link to their building', () => {
@@ -46,7 +49,7 @@ test('Ben Zion / Tarsat sub-folders link to their building', () => {
 
 test('cultural sites and area plans', () => {
   const h = resolveFileLink({ name: 'בית הבימה - רקע אדריכלי.pdf', folderPath: ['אתרי תרבות', 'בית הבימה'], folderIds: ['x', HABIMA_HOUSE] });
-  assert.deepEqual(h.buildingIds, ['b-149522836']);
+  assert.deepEqual(h.buildingIds, [buildingGroup(at('הבימה', 1))[0]]);
   const m = resolveFileLink({ name: 'סקר עצים בוגרים מטרו M2.pdf', folderPath: ['היקף הבלוק', 'מטרו'], folderIds: ['1aBn2s5wLangIONglzFBxcvusIQcg5k5T', METRO] });
   assert.deepEqual(m.buildingIds, []);
   assert.equal(m.areaHe, 'מטרו M2 – תחנת הבימה');
@@ -57,10 +60,10 @@ test('manual links override everything and documents show on every part of a com
     { id: 'f1', name: 'scan.pdf', mimeType: 'application/pdf', folderPath: ['חיסין 4'], folderIds: [CHISSIN_4] },
     {}
   );
-  assert.ok(documentBelongsTo(doc, 'b-495363273'));
+  for (const part of buildingGroup(at('בן ציון', 3))) assert.ok(documentBelongsTo(doc, part));
   const manual = driveFileToDocument(
     { id: 'f1', name: 'scan.pdf', mimeType: 'application/pdf', folderPath: ['חיסין 4'], folderIds: [CHISSIN_4] },
-    { f1: 'b-149523884' }
+    { f1: at('חיסין', 20) }
   );
   assert.equal(manual.matchedBy, 'manual');
   assert.equal(title(manual.buildingId!), 'חיסין 20');
@@ -81,4 +84,8 @@ test('plan sheets with elevations are plans, not facades', () => {
   assert.equal(inferCategoryFromFilename('חיסין 26 - חזית בניין היסטורית'), 'facade');
   assert.equal(inferCategoryFromFilename('חיסין 4 - מפה טופוגרפית ומדידת המגרש'), 'cadastral');
   assert.equal(inferCategoryFromFilename('חיסין 4 - היתר בנייה מספר 526'), 'permit');
+});
+
+test('manual links saved with old OpenStreetMap ids still resolve', () => {
+  assert.equal(title(resolveBuildingId('b-149523884')!), 'חיסין 20');
 });

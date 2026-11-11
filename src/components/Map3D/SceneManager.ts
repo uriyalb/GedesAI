@@ -2,9 +2,13 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import { BuildingPlot, GeotaggedDocument, ViewPreset } from '../../types/index.ts';
-import { REAL_BUILDINGS, REAL_HIGHWAYS, REAL_PARKS, RealBuildingEnvelope } from '../../data/realWorldBlock.ts';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { TessellateModifier } from 'three/examples/jsm/modifiers/TessellateModifier.js';
+import { REAL_HIGHWAYS, REAL_PARKS } from '../../data/realWorldBlock.ts';
+import { GIS_TREES } from '../../data/gisTrees.ts';
+import { groundHeight } from '../../utils/terrain.ts';
 import { latLngToWorld, worldToLatLng } from '../../utils/geo.ts';
-import { BUILDINGS_BY_ID } from '../../data/buildings.ts';
+import { ALL_BUILDINGS, BUILDINGS_BY_ID } from '../../data/buildings.ts';
 import { getFacadeTexture, getRoofTexture, getSatelliteGroundTexture } from '../../utils/buildingTextures.ts';
 
 // Pre-allocated reusable vectors for zero GC in render loop
@@ -31,7 +35,6 @@ export class ChissinSceneManager {
   private parksGroup = new THREE.Group();
   private treesGroup = new THREE.Group();
   private documentsGroup = new THREE.Group();
-  private rooftopElementsGroup = new THREE.Group();
   private groundMesh: THREE.Mesh | null = null;
   private selectionHighlightBox: THREE.BoxHelper | null = null;
 
@@ -42,7 +45,6 @@ export class ChissinSceneManager {
   private isGeotagModeActive = false;
   private showTrees = true;
   private isArchitecturalMode = false;
-  private showRooftops = true;
 
   // Render loop control
   private renderBusy = false;
@@ -106,7 +108,7 @@ export class ChissinSceneManager {
     this.controls.enableDamping = !this.isSoftwareGl;
     this.controls.dampingFactor = 0.08;
     this.controls.maxPolarAngle = Math.PI / 2 - 0.05;
-    this.controls.minDistance = 15;
+    this.controls.minDistance = 6;
     this.controls.maxDistance = 650;
     this.controls.target.set(0, 8, 0);
 
@@ -132,7 +134,6 @@ export class ChissinSceneManager {
     this.scene.add(this.streetsGroup);
     this.scene.add(this.parksGroup);
     this.scene.add(this.realBuildingsGroup);
-    this.scene.add(this.rooftopElementsGroup);
     this.scene.add(this.treesGroup);
     this.scene.add(this.documentsGroup);
 
@@ -179,467 +180,336 @@ export class ChissinSceneManager {
     this.scene.add(fillLight);
   }
 
+  /**
+   * Ground surface following the real terrain (the block rises ~15 m from Dizengoff to Chissin).
+   */
   private buildTerrain() {
-    // Broad Urban Ground Plane with authentic aerial orthophoto texture
-    const groundGeo = new THREE.PlaneGeometry(1600, 1600);
-    const satelliteTex = getSatelliteGroundTexture();
+    const size = 1600;
+    const groundGeo = new THREE.PlaneGeometry(size, size, 200, 200);
+    groundGeo.rotateX(-Math.PI / 2);
+    const pos = groundGeo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      pos.setY(i, groundHeight(pos.getX(i), pos.getZ(i)));
+    }
+    groundGeo.computeVertexNormals();
     const groundMat = new THREE.MeshStandardMaterial({
-      map: satelliteTex,
+      map: getSatelliteGroundTexture(),
       roughness: 0.9,
       metalness: 0.05,
     });
     this.groundMesh = new THREE.Mesh(groundGeo, groundMat);
-    this.groundMesh.rotation.x = -Math.PI / 2;
-    this.groundMesh.position.y = 0;
     this.groundMesh.receiveShadow = !this.isSoftwareGl;
     this.streetsGroup.add(this.groundMesh);
   }
 
   /**
-   * Builds real OpenStreetMap road polylines and pavements
+   * A flat ribbon along a polyline, draped over the terrain.
    */
-  private buildRealHighways() {
-    const roadMat = new THREE.MeshStandardMaterial({
-      color: 0x334155, // asphalt
-      roughness: 0.8,
-      metalness: 0.15,
-      polygonOffset: true,
-      polygonOffsetFactor: -1,
-      polygonOffsetUnits: -1,
-    });
+  private ribbonGeometry(points: { x: number; z: number }[], width: number, lift: number): THREE.BufferGeometry | null {
+    // Densify so the ribbon follows the slope
+    const pts: { x: number; z: number }[] = [];
+    for (let i = 0; i < points.length - 1; i++) {
+      const a = points[i];
+      const b = points[i + 1];
+      const len = Math.hypot(b.x - a.x, b.z - a.z);
+      const n = Math.max(1, Math.ceil(len / 4));
+      for (let k = 0; k < n; k++) pts.push({ x: a.x + ((b.x - a.x) * k) / n, z: a.z + ((b.z - a.z) * k) / n });
+    }
+    pts.push(points[points.length - 1]);
+    if (pts.length < 2) return null;
 
-    const chissinRoadMat = new THREE.MeshStandardMaterial({
-      color: 0x1e293b, // darker asphalt for highlighted Chissin St
-      roughness: 0.7,
-      metalness: 0.2,
-      polygonOffset: true,
-      polygonOffsetFactor: -2,
-      polygonOffsetUnits: -2,
-    });
-
-    REAL_HIGHWAYS.forEach((hwy) => {
-      if (hwy.points.length < 2) return;
-      const isChissin = hwy.name.includes('חיסין');
-      const isBenZion = hwy.name.includes('בן ציון');
-      const isDizengoff = hwy.name.includes('דיזנגוף');
-
-      const width = isBenZion ? 16 : isChissin ? 12 : 10;
-      const mat = isChissin ? chissinRoadMat : roadMat;
-
-      // Build continuous road ribbon geometry
-      const worldPts = hwy.points.map((p) => latLngToWorld(p.lat, p.lng));
-
-      for (let i = 0; i < worldPts.length - 1; i++) {
-        const p1 = worldPts[i];
-        const p2 = worldPts[i + 1];
-
-        const dx = p2.x - p1.x;
-        const dz = p2.z - p1.z;
-        const len = Math.sqrt(dx * dx + dz * dz);
-        if (len < 0.5) continue;
-
-        const roadSegGeo = new THREE.PlaneGeometry(width, len);
-        const roadSeg = new THREE.Mesh(roadSegGeo, mat);
-        roadSeg.rotation.x = -Math.PI / 2;
-        roadSeg.rotation.z = Math.atan2(dx, dz);
-        roadSeg.position.set((p1.x + p2.x) / 2, 0.05, (p1.z + p2.z) / 2);
-        roadSeg.receiveShadow = !this.isSoftwareGl;
-        this.streetsGroup.add(roadSeg);
+    const verts: number[] = [];
+    const idx: number[] = [];
+    for (let i = 0; i < pts.length; i++) {
+      const p = pts[i];
+      const prev = pts[Math.max(0, i - 1)];
+      const next = pts[Math.min(pts.length - 1, i + 1)];
+      let dx = next.x - prev.x;
+      let dz = next.z - prev.z;
+      const l = Math.hypot(dx, dz) || 1;
+      dx /= l;
+      dz /= l;
+      const nx = -dz * (width / 2);
+      const nz = dx * (width / 2);
+      for (const s of [1, -1]) {
+        const x = p.x + nx * s;
+        const z = p.z + nz * s;
+        verts.push(x, groundHeight(x, z) + lift, z);
       }
-    });
+      if (i > 0) {
+        const o = (i - 1) * 2;
+        idx.push(o, o + 2, o + 1, o + 1, o + 2, o + 3);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    return geo;
   }
 
   /**
-   * Builds real public gardens (Gan Chissin, Habima Square)
+   * Streets and footpaths from OpenStreetMap centre-lines, with widths by street class.
+   */
+  private buildRealHighways() {
+    const groups: Record<string, { mat: THREE.Material; geos: THREE.BufferGeometry[] }> = {
+      road: {
+        mat: new THREE.MeshStandardMaterial({ color: 0x475569, roughness: 0.85, metalness: 0.1 }),
+        geos: [],
+      },
+      chissin: {
+        mat: new THREE.MeshStandardMaterial({ color: 0x334155, roughness: 0.8, metalness: 0.1 }),
+        geos: [],
+      },
+      path: {
+        mat: new THREE.MeshStandardMaterial({ color: 0xd6d3d1, roughness: 0.95 }),
+        geos: [],
+      },
+    };
+    const WIDTH: Record<string, number> = {
+      tertiary: 8,
+      residential: 6.5,
+      living_street: 5.5,
+      service: 3.5,
+      pedestrian: 4,
+      footway: 2.2,
+      path: 2.2,
+      cycleway: 1.8,
+      steps: 2,
+    };
+
+    REAL_HIGHWAYS.forEach((hwy) => {
+      if (hwy.points.length < 2) return;
+      const isPath = ['footway', 'path', 'cycleway', 'steps', 'pedestrian'].includes(hwy.type);
+      const key = isPath ? 'path' : hwy.name.includes('חיסין') ? 'chissin' : 'road';
+      const geo = this.ribbonGeometry(
+        hwy.points.map((p) => latLngToWorld(p.lat, p.lng)),
+        WIDTH[hwy.type] ?? 6,
+        isPath ? 0.14 : 0.1
+      );
+      if (geo) groups[key].geos.push(geo);
+    });
+
+    for (const g of Object.values(groups)) {
+      if (!g.geos.length) continue;
+      const merged = mergeGeometries(g.geos);
+      g.geos.forEach((x) => x.dispose());
+      if (!merged) continue;
+      const mesh = new THREE.Mesh(merged, g.mat);
+      mesh.receiveShadow = !this.isSoftwareGl;
+      this.streetsGroup.add(mesh);
+    }
+  }
+
+  /**
+   * Public gardens and squares from OpenStreetMap, draped over the terrain.
    */
   private buildRealParks() {
+    const tess = new TessellateModifier(4, 6);
     REAL_PARKS.forEach((park) => {
       if (park.polygon.length < 3) return;
       const worldPts = park.polygon.map((p) => latLngToWorld(p.lat, p.lng));
-
       const shape = new THREE.Shape();
       shape.moveTo(worldPts[0].x, -worldPts[0].z);
-      for (let i = 1; i < worldPts.length; i++) {
-        shape.lineTo(worldPts[i].x, -worldPts[i].z);
-      }
+      for (let i = 1; i < worldPts.length; i++) shape.lineTo(worldPts[i].x, -worldPts[i].z);
       shape.closePath();
 
-      const isHabima = park.name.includes('הבימה') || park.name.includes('יעקב');
-      const parkColor = isHabima ? 0xf1f5f9 : 0x86efac; // Habima stone vs green garden
-      const parkGeo = new THREE.ShapeGeometry(shape);
-      const parkMat = new THREE.MeshStandardMaterial({
-        color: parkColor,
-        roughness: 0.85,
-        polygonOffset: true,
-        polygonOffsetFactor: -3,
-        polygonOffsetUnits: -3,
-      });
+      let geo: THREE.BufferGeometry = new THREE.ShapeGeometry(shape);
+      geo.rotateX(-Math.PI / 2);
+      try {
+        geo = tess.modify(geo);
+      } catch {
+        /* keep the coarse geometry */
+      }
+      const pos = geo.attributes.position;
+      for (let i = 0; i < pos.count; i++) pos.setY(i, groundHeight(pos.getX(i), pos.getZ(i)) + 0.12);
+      geo.computeVertexNormals();
 
-      const mesh = new THREE.Mesh(parkGeo, parkMat);
-      mesh.rotation.x = -Math.PI / 2;
-      mesh.position.y = 0.08;
+      const isPaved = park.name.includes('הבימה');
+      const mesh = new THREE.Mesh(
+        geo,
+        new THREE.MeshStandardMaterial({ color: isPaved ? 0xe7e5e4 : 0x9ccc8a, roughness: 0.9 })
+      );
       mesh.receiveShadow = !this.isSoftwareGl;
       this.parksGroup.add(mesh);
     });
 
-    // Populate trees in Gan Chissin & Ben Zion promenade
     this.populateRealTrees();
   }
 
+  /**
+   * Trees at their surveyed positions (municipal inventory + 2024 canopy map), drawn as instances.
+   */
   private populateRealTrees() {
-    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x5b3a29, roughness: 0.9 });
-    const foliageMat = new THREE.MeshStandardMaterial({
-      color: 0x166534, // dense ficus green
-      roughness: 0.7,
+    const broad = GIS_TREES.filter((t) => !t[4]);
+    const palms = GIS_TREES.filter((t) => t[4]);
+    const m4 = new THREE.Matrix4();
+    const q = new THREE.Quaternion();
+    const s = new THREE.Vector3();
+    const p = new THREE.Vector3();
+    const color = new THREE.Color();
+
+    const trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4f3a, roughness: 0.9 });
+    const crownMat = new THREE.MeshStandardMaterial({ color: 0x3d6b2c, roughness: 0.85 });
+    const trunkGeo = new THREE.CylinderGeometry(0.5, 0.7, 1, 6);
+    trunkGeo.translate(0, 0.5, 0);
+    const crownGeo = new THREE.IcosahedronGeometry(1, 1);
+
+    const trunks = new THREE.InstancedMesh(trunkGeo, trunkMat, GIS_TREES.length);
+    const crowns = new THREE.InstancedMesh(crownGeo, crownMat, broad.length);
+    const palmCrowns = new THREE.InstancedMesh(new THREE.ConeGeometry(1, 1, 7), crownMat, Math.max(1, palms.length));
+
+    let ti = 0;
+    broad.forEach(([lat, lng, r, h], i) => {
+      const w = latLngToWorld(lat, lng);
+      const y = groundHeight(w.x, w.z);
+      const crownH = Math.max(2.5, h * 0.55);
+      const trunkH = h - crownH * 0.75;
+      m4.compose(p.set(w.x, y, w.z), q, s.set(0.35 + r * 0.04, trunkH, 0.35 + r * 0.04));
+      trunks.setMatrixAt(ti++, m4);
+      m4.compose(p.set(w.x, y + h - crownH / 2, w.z), q, s.set(r, crownH / 2, r));
+      crowns.setMatrixAt(i, m4);
+      // Slight variation of greens (multiplies the crown colour)
+      color.setHSL(0.22 + ((i * 37) % 10) / 100, 0.35, 0.62 + ((i * 53) % 10) / 40);
+      crowns.setColorAt(i, color);
     });
-
-    // Cluster trees in Gan Chissin (Center of block around lat: 32.0738, lng: 34.7770)
-    const ganChissinCenter = latLngToWorld(32.07385, 34.77695);
-    for (let i = 0; i < 28; i++) {
-      const angle = (i / 28) * Math.PI * 2 + (i % 3);
-      const radius = 5 + (i % 7) * 4.5;
-      const tx = ganChissinCenter.x + Math.cos(angle) * radius;
-      const tz = ganChissinCenter.z + Math.sin(angle) * radius;
-
-      const tree = this.createProceduralTree(tx, tz, trunkMat, foliageMat);
-      this.treesGroup.add(tree);
+    palms.forEach(([lat, lng, , h], i) => {
+      const w = latLngToWorld(lat, lng);
+      const y = groundHeight(w.x, w.z);
+      m4.compose(p.set(w.x, y, w.z), q, s.set(0.25, h, 0.25));
+      trunks.setMatrixAt(ti++, m4);
+      m4.compose(p.set(w.x, y + h, w.z), new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI), s.set(2.6, 1.6, 2.6));
+      palmCrowns.setMatrixAt(i, m4);
+      palmCrowns.setColorAt(i, color.set(0xb5c99a));
+    });
+    trunks.count = ti;
+    palmCrowns.count = palms.length;
+    for (const mesh of [trunks, crowns, palmCrowns]) {
+      mesh.castShadow = !this.isSoftwareGl;
+      mesh.instanceMatrix.needsUpdate = true;
+      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+      this.treesGroup.add(mesh);
     }
-
-    // Double row of trees along Ben Zion Boulevard
-    for (let step = -120; step <= 140; step += 18) {
-      [-7, 7].forEach((sideOffset) => {
-        const tree = this.createProceduralTree(step, -60 + sideOffset, trunkMat, foliageMat);
-        this.treesGroup.add(tree);
-      });
-    }
-  }
-
-  private createProceduralTree(
-    x: number,
-    z: number,
-    trunkMat: THREE.Material,
-    foliageMat: THREE.Material
-  ): THREE.Group {
-    const tree = new THREE.Group();
-    tree.position.set(x, 0, z);
-
-    const trunkGeo = new THREE.CylinderGeometry(0.35, 0.5, 4.2, 8);
-    const trunk = new THREE.Mesh(trunkGeo, trunkMat);
-    trunk.position.y = 2.1;
-    tree.add(trunk);
-
-    const foliage1 = new THREE.Mesh(new THREE.SphereGeometry(2.3, 10, 8), foliageMat);
-    foliage1.position.set(0, 4.8, 0);
-    tree.add(foliage1);
-
-    const foliage2 = new THREE.Mesh(new THREE.SphereGeometry(1.7, 8, 8), foliageMat);
-    foliage2.position.set(1.1, 4.4, 0.3);
-    tree.add(foliage2);
-
-    return tree;
   }
 
   /**
-   * Constructs all real 175 OpenStreetMap 3D building envelopes with authentic textures,
-   * Bauhaus balconies, pilotis, and Tel Aviv rooftops!
+   * Builds every building of the block from the municipal GIS footprints and measured heights,
+   * standing on the real ground level, with open ground floors (pilotis) where the GIS records them.
    */
   private buildRealBuildings() {
-    // Clear previous
     while (this.realBuildingsGroup.children.length > 0) {
       const obj = this.realBuildingsGroup.children[0];
       this.realBuildingsGroup.remove(obj);
       this.disposeObject(obj);
     }
-    while (this.rooftopElementsGroup.children.length > 0) {
-      const obj = this.rooftopElementsGroup.children[0];
-      this.rooftopElementsGroup.remove(obj);
-      this.disposeObject(obj);
-    }
 
-    // Cached materials
-    const roofTex = getRoofTexture();
-    const roofMat = new THREE.MeshStandardMaterial({
-      map: roofTex,
-      roughness: 0.85,
-      metalness: 0.05,
-    });
-
+    const roofMat = new THREE.MeshStandardMaterial({ map: getRoofTexture(), roughness: 0.85, metalness: 0.05 });
     const facadeMatCache = new Map<string, THREE.MeshStandardMaterial>();
-    const getFacadeMat = (levels: number, isHighlighted: boolean) => {
-      const key = `${levels}-${isHighlighted}`;
+    const getFacadeMat = (levels: number, highlighted: boolean) => {
+      const key = `${levels}-${highlighted}`;
       if (!facadeMatCache.has(key)) {
-        const tex = getFacadeTexture(levels, isHighlighted);
         facadeMatCache.set(
           key,
-          new THREE.MeshStandardMaterial({
-            map: tex,
-            roughness: 0.75,
-            metalness: 0.05,
-          })
+          new THREE.MeshStandardMaterial({ map: getFacadeTexture(levels, highlighted), roughness: 0.75, metalness: 0.05 })
         );
       }
       return facadeMatCache.get(key)!;
     };
+    const plainMat = new THREE.MeshStandardMaterial({ color: 0xe2e8f0, roughness: 0.8 });
+    const coreMat = new THREE.MeshStandardMaterial({ color: 0xcbd5e1, roughness: 0.85 });
+    const columnMat = new THREE.MeshStandardMaterial({ color: 0xf1f5f9, roughness: 0.7 });
+    const columnGeo = new THREE.CylinderGeometry(0.22, 0.22, 1, 8);
+    columnGeo.translate(0, 0.5, 0);
+    const edgeMatChissin = new THREE.LineBasicMaterial({ color: 0x0284c7, transparent: true, opacity: 0.75 });
+    const edgeMat = new THREE.LineBasicMaterial({ color: 0x64748b, transparent: true, opacity: 0.4 });
 
-    const rooftopClutterMat = new THREE.MeshStandardMaterial({
-      color: 0x94a3b8,
-      roughness: 0.7,
-    });
-    const waterHeaterTankMat = new THREE.MeshStandardMaterial({
-      color: 0xffffff,
-      roughness: 0.35,
-      metalness: 0.2,
-    });
-    const solarCollectorMat = new THREE.MeshStandardMaterial({
-      color: 0x0f172a, // dark solar panel
-      roughness: 0.2,
-      metalness: 0.8,
-    });
-    const pergolaMat = new THREE.MeshStandardMaterial({
-      color: 0xe2e8f0,
-      roughness: 0.8,
-    });
-    const balconyMat = new THREE.MeshStandardMaterial({
-      color: 0xf8fafc,
-      roughness: 0.7,
-      metalness: 0.05,
-    });
-    const pilotiMat = new THREE.MeshStandardMaterial({
-      color: 0xdbeafe,
-      roughness: 0.6,
-      metalness: 0.1,
-    });
+    const SINK = 3; // extend walls below ground so they meet the sloping terrain
+    const PILOTIS_H = 3;
 
-    REAL_BUILDINGS.forEach((b) => {
-      if (b.polygon.length < 3) return;
-
-      const isChissinBuilding =
-        b.street.includes('חיסין') ||
-        (b.center.lat >= 32.0731 && b.center.lat <= 32.0747 && b.center.lng >= 34.7762 && b.center.lng <= 34.7785);
-
-      // Convert GIS points to local coordinates
-      const worldPts = b.polygon.map((p) => latLngToWorld(p.lat, p.lng));
-      const centerWorld = latLngToWorld(b.center.lat, b.center.lng);
-
-      // Create 2D shape relative to building center
-      const shape = new THREE.Shape();
-      shape.moveTo(worldPts[0].x - centerWorld.x, -(worldPts[0].z - centerWorld.z));
-      for (let i = 1; i < worldPts.length; i++) {
-        shape.lineTo(worldPts[i].x - centerWorld.x, -(worldPts[i].z - centerWorld.z));
-      }
-      shape.closePath();
-
-      const extrudeSettings: THREE.ExtrudeGeometryOptions = {
-        depth: b.height,
-        bevelEnabled: true,
-        bevelSegments: 2,
-        steps: 1,
-        bevelSize: 0.15,
-        bevelThickness: 0.15,
+    const shapeFrom = (rings: [number, number][][], cx: number, cz: number, scale = 1) => {
+      const toXY = ([lat, lng]: [number, number]) => {
+        const w = latLngToWorld(lat, lng);
+        return new THREE.Vector2((w.x - cx) * scale, -(w.z - cz) * scale);
       };
+      const shape = new THREE.Shape(rings[0].map(toXY));
+      for (const hole of rings.slice(1)) shape.holes.push(new THREE.Path(hole.map(toXY)));
+      return shape;
+    };
 
-      const geo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
-
-      // Normalize UV mapping for realistic architectural facade windows and roof drainage tiles
-      const uvAttr = geo.attributes.uv;
-      if (uvAttr && geo.groups.length >= 2) {
-        // Roof cap UV scaling (group 0)
-        const roofGroup = geo.groups[0];
-        for (let i = roofGroup.start; i < roofGroup.start + roofGroup.count; i++) {
-          uvAttr.setXY(i, uvAttr.getX(i) * 0.18, uvAttr.getY(i) * 0.18);
+    /** Extrudes a footprint from y0 to y1 (relative) and maps facade UVs so window rows start at `floorZ`. */
+    const extrude = (shape: THREE.Shape, depth: number, floorZ: number, facadeH: number) => {
+      const geo = new THREE.ExtrudeGeometry(shape, { depth, bevelEnabled: false, steps: 1 });
+      const uv = geo.attributes.uv;
+      if (uv && geo.groups.length >= 2) {
+        const roof = geo.groups[0];
+        for (let i = roof.start; i < roof.start + roof.count; i++) uv.setXY(i, uv.getX(i) * 0.18, uv.getY(i) * 0.18);
+        const side = geo.groups[1];
+        for (let i = side.start; i < side.start + side.count; i++) {
+          const z = 1 - uv.getY(i); // WorldUVGenerator: v = 1 - z
+          uv.setXY(i, uv.getX(i) / 12, Math.max(0, Math.min(1, (z - floorZ) / facadeH)));
         }
-        // Side walls UV scaling & vertical level alignment (group 1)
-        const sideGroup = geo.groups[1];
-        for (let i = sideGroup.start; i < sideGroup.start + sideGroup.count; i++) {
-          const u = uvAttr.getX(i);
-          const v = uvAttr.getY(i);
-          // Map v to 0 (ground level) .. 1 (roof level)
-          const normalizedV = Math.max(0, Math.min(1, (1 - v) / b.height));
-          const scaledU = u / 12.0; // 12 meters facade width per window bay
-          uvAttr.setXY(i, scaledU, normalizedV);
-        }
-        uvAttr.needsUpdate = true;
+        uv.needsUpdate = true;
       }
+      geo.rotateX(-Math.PI / 2);
+      return geo;
+    };
 
-      geo.rotateX(-Math.PI / 2); // Three.js extrudes in Z, -PI/2 rotates upwards to +Y height!
-      geo.computeBoundingBox();
-      const bBox = geo.boundingBox || new THREE.Box3();
+    for (const b of ALL_BUILDINGS) {
+      const center = latLngToWorld(b.centerCoordinates.lat, b.centerCoordinates.lng);
+      const levels = Math.min(Math.max(b.levels, 1), 12);
+      const smallStructure = !!b.kind && b.kind !== 'מבנה ציבור';
+      const facadeMat = smallStructure ? plainMat : getFacadeMat(levels, b.isChissin);
+      const withPilotis = b.pilotis && b.height > 7;
 
-      const clampedLevels = Math.min(Math.max(b.levels, 2), 7);
-      const facadeMat = getFacadeMat(clampedLevels, isChissinBuilding);
+      b.polygons.forEach((rings, partIdx) => {
+        if (rings[0].length < 3) return;
+        const shape = shapeFrom(rings, center.x, center.z);
+        const bottom = withPilotis ? PILOTIS_H : -SINK;
+        const facadeH = b.height - (withPilotis ? PILOTIS_H : 0);
+        const geo = extrude(shape, b.height - bottom, withPilotis ? 0 : SINK, facadeH);
 
-      // Multi-material: index 0 = roof/bottom caps, index 1 = side facade walls
-      const mesh = new THREE.Mesh(geo, [roofMat, facadeMat]);
-      mesh.position.set(centerWorld.x, 0, centerWorld.z);
-      mesh.castShadow = !this.isSoftwareGl;
-      mesh.receiveShadow = !this.isSoftwareGl;
-      mesh.userData = {
-        type: 'building',
-        id: b.id,
-        street: b.street,
-        housenumber: b.housenumber,
-        height: b.height,
-        levels: b.levels,
-        center: b.center,
-      };
+        const mesh = new THREE.Mesh(geo, [roofMat, facadeMat]);
+        mesh.position.set(center.x, b.baseElevation + bottom, center.z);
+        mesh.castShadow = !this.isSoftwareGl;
+        mesh.receiveShadow = !this.isSoftwareGl;
+        mesh.userData = { type: 'building', id: b.id };
+        mesh.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 25), b.isChissin ? edgeMatChissin : edgeMat));
+        this.realBuildingsGroup.add(mesh);
 
-      // Architectural crisp edge lines (Apple Maps 3D style)
-      const edgeGeo = new THREE.EdgesGeometry(geo, 25);
-      const edgeMat = new THREE.LineBasicMaterial({
-        color: isChissinBuilding ? 0x0284c7 : 0x64748b,
-        transparent: true,
-        opacity: isChissinBuilding ? 0.75 : 0.4,
+        if (withPilotis) {
+          // Recessed ground floor (lobby / stair core) and columns under the slab
+          const coreGeo = extrude(shapeFrom(rings, center.x, center.z, 0.6), PILOTIS_H + SINK, 0, PILOTIS_H + SINK);
+          const core = new THREE.Mesh(coreGeo, coreMat);
+          core.position.set(center.x, b.baseElevation - SINK, center.z);
+          core.castShadow = !this.isSoftwareGl;
+          core.userData = { type: 'building', id: b.id };
+          this.realBuildingsGroup.add(core);
+
+          const outer = rings[0];
+          const step = Math.max(1, Math.ceil(outer.length / 12));
+          for (let i = 0; i < outer.length; i += step) {
+            const w = latLngToWorld(outer[i][0], outer[i][1]);
+            // pull columns slightly inside the footprint
+            const x = w.x + (center.x - w.x) * 0.06;
+            const z = w.z + (center.z - w.z) * 0.06;
+            const g = groundHeight(x, z);
+            const top = b.baseElevation + PILOTIS_H;
+            const col = new THREE.Mesh(columnGeo, columnMat);
+            col.position.set(x, g - 0.5, z);
+            col.scale.set(1, top - g + 0.5, 1);
+            this.realBuildingsGroup.add(col);
+          }
+        }
+
+        // Floating address billboard for Chissin buildings
+        const chissinAddr = partIdx === 0 ? b.addresses.find((a) => a.street === 'חיסין') : undefined;
+        if (chissinAddr) {
+          const label = this.createAddressSprite(`${chissinAddr.number}${chissinAddr.entrance}`);
+          label.position.set(center.x, b.baseElevation + b.height + 4.5, center.z);
+          this.realBuildingsGroup.add(label);
+        }
       });
-      const edgeLines = new THREE.LineSegments(edgeGeo, edgeMat);
-      mesh.add(edgeLines);
-
-      this.realBuildingsGroup.add(mesh);
-
-      // Add 3D Bauhaus Architectural features for Chissin Street buildings
-      if (isChissinBuilding) {
-        this.addBauhausArchitecturalFeatures(
-          mesh,
-          bBox,
-          b.height,
-          clampedLevels,
-          balconyMat,
-          pilotiMat
-        );
-      }
-
-      // Rooftop Authentic Tel Aviv Clutter (Elevator rooms, Solar water heaters, Pergolas, AC units)
-      if (this.showRooftops && b.height < 55) {
-        this.addRooftopDetails(
-          mesh,
-          bBox,
-          b.height,
-          isChissinBuilding,
-          rooftopClutterMat,
-          waterHeaterTankMat,
-          solarCollectorMat,
-          pergolaMat
-        );
-      }
-
-      // Floating address billboard for Chissin buildings (address from the municipal GIS)
-      const chissinAddr = BUILDINGS_BY_ID.get(b.id)?.addresses.find((a) => a.street === 'חיסין');
-      if (chissinAddr) {
-        const labelSprite = this.createAddressSprite(`${chissinAddr.number}${chissinAddr.entrance}`);
-        labelSprite.position.set(centerWorld.x, b.height + 4.5, centerWorld.z);
-        this.realBuildingsGroup.add(labelSprite);
-      }
-    });
-  }
-
-  private addBauhausArchitecturalFeatures(
-    mesh: THREE.Mesh,
-    bBox: THREE.Box3,
-    height: number,
-    levels: number,
-    balconyMat: THREE.Material,
-    pilotiMat: THREE.Material
-  ) {
-    const floorH = height / levels;
-    const frontZ = bBox.max.z;
-    const buildingWidth = Math.max(8, bBox.max.x - bBox.min.x);
-    const balconyW = Math.min(buildingWidth * 0.55, 7.5);
-
-    // 1. Cantilevered Balconies on residential levels (Floors 1..levels-1)
-    for (let l = 1; l < levels; l++) {
-      const balconyY = l * floorH;
-      // Front balcony
-      const balconyGeo = new THREE.BoxGeometry(balconyW, 0.9, 1.8);
-      const balcony = new THREE.Mesh(balconyGeo, balconyMat);
-      balcony.position.set(0, balconyY + 0.45, frontZ + 0.85);
-      balcony.castShadow = !this.isSoftwareGl;
-      mesh.add(balcony);
-
-      // Curved edge trim on balcony
-      const curveGeo = new THREE.CylinderGeometry(0.9, 0.9, 0.9, 12, 1, false, 0, Math.PI);
-      const curve = new THREE.Mesh(curveGeo, balconyMat);
-      curve.rotation.y = Math.PI / 2;
-      curve.position.set(balconyW / 2, balconyY + 0.45, frontZ + 0.85);
-      mesh.add(curve);
     }
-
-    // 2. Ground Floor Concrete Pilotis (עמודי בטון)
-    const pilotiGeo = new THREE.CylinderGeometry(0.32, 0.32, floorH * 0.95, 10);
-    const spacing = balconyW * 0.38;
-    [-spacing, 0, spacing].forEach((offset) => {
-      const piloti = new THREE.Mesh(pilotiGeo, pilotiMat);
-      piloti.position.set(offset, (floorH * 0.95) / 2, frontZ - 0.3);
-      piloti.castShadow = !this.isSoftwareGl;
-      mesh.add(piloti);
-    });
-  }
-
-  private addRooftopDetails(
-    mesh: THREE.Mesh,
-    bBox: THREE.Box3,
-    height: number,
-    isChissin: boolean,
-    clutterMat: THREE.Material,
-    tankMat: THREE.Material,
-    solarMat: THREE.Material,
-    pergolaMat: THREE.Material
-  ) {
-    const roofY = height;
-    const halfW = (bBox.max.x - bBox.min.x) * 0.25;
-    const halfD = (bBox.max.z - bBox.min.z) * 0.25;
-
-    // 1. Rooftop Elevator / Stairwell Penthouse Box with overhanging canopy
-    const penthouseGeo = new THREE.BoxGeometry(4.4, 2.7, 3.6);
-    const penthouse = new THREE.Mesh(penthouseGeo, clutterMat);
-    penthouse.position.set(halfW * 0.3, roofY + 1.35, halfD * 0.3);
-    mesh.add(penthouse);
-
-    const canopyGeo = new THREE.BoxGeometry(5.0, 0.2, 4.2);
-    const canopy = new THREE.Mesh(canopyGeo, clutterMat);
-    canopy.position.set(halfW * 0.3, roofY + 2.75, halfD * 0.3);
-    mesh.add(canopy);
-
-    // 2. Battery of Solar Water Heaters (דודי שמש וקולטים מוטים לדרום)
-    const heaterOffsets = [
-      { x: -Math.max(2.2, halfW), z: -Math.max(1.5, halfD) },
-      { x: 0, z: -Math.max(1.8, halfD) },
-      { x: Math.max(2.2, halfW), z: -Math.max(1.5, halfD) },
-    ];
-
-    heaterOffsets.forEach((pos) => {
-      // Cylinder water tank
-      const tankGeo = new THREE.CylinderGeometry(0.32, 0.32, 1.35, 10);
-      const tank = new THREE.Mesh(tankGeo, tankMat);
-      tank.rotation.z = Math.PI / 2;
-      tank.position.set(pos.x, roofY + 0.85, pos.z - 0.7);
-      mesh.add(tank);
-
-      // Angled dark solar collector
-      const solarGeo = new THREE.BoxGeometry(1.25, 0.07, 1.45);
-      const solar = new THREE.Mesh(solarGeo, solarMat);
-      solar.rotation.x = 0.52; // angled towards the sun (south)
-      solar.position.set(pos.x, roofY + 0.45, pos.z);
-      mesh.add(solar);
-    });
-
-    // 3. Concrete Pergola (פרגולת קורות בטון על הגג)
-    if (isChissin) {
-      for (let beam = 0; beam < 5; beam++) {
-        const beamGeo = new THREE.BoxGeometry(0.18, 0.32, 4.6);
-        const pergolaBeam = new THREE.Mesh(beamGeo, pergolaMat);
-        pergolaBeam.position.set(-2.0 + beam * 0.9, roofY + 2.2, halfD * 0.7);
-        mesh.add(pergolaBeam);
-      }
-      const girderGeo = new THREE.BoxGeometry(4.2, 0.25, 0.25);
-      const girder = new THREE.Mesh(girderGeo, pergolaMat);
-      girder.position.set(-0.2, roofY + 2.4, halfD * 0.7);
-      mesh.add(girder);
-    }
-
-    // 4. Outdoor AC Compressor Units (מנועי מזגנים)
-    const acGeo = new THREE.BoxGeometry(0.85, 0.65, 0.45);
-    const ac = new THREE.Mesh(acGeo, clutterMat);
-    ac.position.set(halfW * 0.8, roofY + 0.35, -halfD * 0.5);
-    mesh.add(ac);
   }
 
   private createAddressSprite(numberStr: string): THREE.Sprite {
@@ -710,7 +580,7 @@ export class ChissinSceneManager {
   private createBuildingPin(building: BuildingPlot, count: number): THREE.Group {
     const pinGroup = new THREE.Group();
     const worldPos = latLngToWorld(building.centerCoordinates.lat, building.centerCoordinates.lng);
-    const elevation = building.height + 7;
+    const elevation = building.baseElevation + building.height + 7;
 
     pinGroup.position.set(worldPos.x, elevation, worldPos.z);
     pinGroup.userData = { type: 'buildingPin', buildingId: building.id };
@@ -799,9 +669,9 @@ export class ChissinSceneManager {
     // Keep the current viewing direction, just move closer to the building.
     const dir = this.camera.position.clone().sub(this.controls.target).normalize();
     const dist = Math.max(70, building.height * 3);
-    const targetLookAt = new THREE.Vector3(worldPos.x, building.height / 2, worldPos.z);
+    const targetLookAt = new THREE.Vector3(worldPos.x, building.baseElevation + building.height / 2, worldPos.z);
     const targetPos = targetLookAt.clone().add(dir.multiplyScalar(dist));
-    targetPos.y = Math.max(targetPos.y, building.height + 25);
+    targetPos.y = Math.max(targetPos.y, building.baseElevation + building.height + 25);
 
     this.startCameraTransition(targetPos, targetLookAt);
   }
@@ -815,10 +685,21 @@ export class ChissinSceneManager {
         targetPos.set(-80, 150, 170);
         targetLook.set(0, 8, 0);
         break;
-      case 'street':
-        targetPos.set(10, 6, -15);
-        targetLook.set(20, 6, 40);
+      case 'street': {
+        // Eye level on Chissin street, looking along the street
+        const chissin = REAL_HIGHWAYS.filter((h) => h.name.includes('חיסין')).sort((a, b) => b.points.length - a.points.length)[0];
+        if (chissin && chissin.points.length > 3) {
+          const a = latLngToWorld(chissin.points[1].lat, chissin.points[1].lng);
+          const far = chissin.points[Math.min(chissin.points.length - 1, 7)];
+          const b = latLngToWorld(far.lat, far.lng);
+          targetPos.set(a.x, groundHeight(a.x, a.z) + 2.2, a.z);
+          targetLook.set(b.x, groundHeight(b.x, b.z) + 3, b.z);
+        } else {
+          targetPos.set(10, 6, -15);
+          targetLook.set(20, 6, 40);
+        }
         break;
+      }
       case 'topDown':
         targetPos.set(0, 320, 5);
         targetLook.set(0, 0, 0);

@@ -1,6 +1,6 @@
 import { GeotaggedDocument } from '../types/index.ts';
-import { ALL_BUILDINGS, BUILDINGS_BY_ID } from '../data/buildings.ts';
-import { FOLDER_LINKS, ROOT_AREA, BUILDING_COMPOUNDS } from '../data/driveFolders.ts';
+import { ALL_BUILDINGS, BUILDINGS_BY_ID, buildingGroup, resolveBuildingId } from '../data/buildings.ts';
+import { FOLDER_LINKS, ROOT_AREA } from '../data/driveFolders.ts';
 import { buildBuildingIndex, linkFileToBuildings, extractYear, cleanDocumentTitle } from '../utils/addressMatch.ts';
 import { DriveFileItem, inferCategoryFromFilename, formatBytes, driveViewUrl } from './drive.ts';
 import { CHISSIN_CENTER } from '../utils/geo.ts';
@@ -28,20 +28,12 @@ export function saveAssignments(a: ManualAssignments) {
 
 const index = buildBuildingIndex(ALL_BUILDINGS);
 
-// Building compounds: every member maps to the compound's first (primary) id.
-const COMPOUND_PRIMARY = new Map<string, string>();
-const COMPOUND_MEMBERS = new Map<string, string[]>();
-for (const group of BUILDING_COMPOUNDS) {
-  for (const id of group) {
-    COMPOUND_PRIMARY.set(id, group[0]);
-    COMPOUND_MEMBERS.set(id, group);
-  }
-}
-const canonical = (id: string) => COMPOUND_PRIMARY.get(id) ?? id;
+// Parts of one building (sharing an address) map to the group's primary part.
+const canonical = (id: string) => buildingGroup(id)[0];
 
-/** All OSM envelope ids that make up the same building as `id`. */
+/** All building ids that make up the same building as `id`. */
 export function buildingMembers(id: string): string[] {
-  return COMPOUND_MEMBERS.get(id) ?? [id];
+  return buildingGroup(id);
 }
 
 interface ResolvedLink {
@@ -56,15 +48,19 @@ export function resolveFileLink(
   file: Pick<DriveFileItem, 'name' | 'folderPath' | 'folderIds'>,
   manual?: string
 ): ResolvedLink {
-  if (manual && BUILDINGS_BY_ID.has(manual)) {
-    return { buildingIds: [canonical(manual)], matchedBy: 'manual' };
+  const manualId = manual ? resolveBuildingId(manual) : undefined;
+  if (manualId) {
+    return { buildingIds: [canonical(manualId)], matchedBy: 'manual' };
   }
 
   // 1. Curated folder links (innermost folder first)
   const ids = file.folderIds ?? [];
   for (let i = ids.length - 1; i >= 0; i--) {
     const link = FOLDER_LINKS[ids[i]];
-    if (link?.buildingIds) return { buildingIds: link.buildingIds.map(canonical), matchedBy: 'folder' };
+    if (link?.address) {
+      const ids = index.byNumber.get(`${link.address[0]}|${link.address[1]}`) ?? [];
+      if (ids.length) return { buildingIds: dedupe(ids.map(canonical)), matchedBy: 'folder' };
+    }
     if (link?.areaHe) {
       // An address in the file name of an area document still wins, e.g. a plan for one building.
       const own = linkFileToBuildings(file.name, [], index);

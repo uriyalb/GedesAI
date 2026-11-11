@@ -5,28 +5,29 @@
  *
  * Keys are Drive folder ids. A folder link applies to every file inside it (including
  * sub-folders) and takes precedence over addresses found in file names.
- *  - buildingIds: link the files to these buildings (OSM envelope ids, see realWorldBlock.ts)
+ *  - address: link the files to the building at this address
  *  - areaHe/areaEn: the files describe a public space / plan area rather than one building
  */
 export interface FolderLink {
-  buildingIds?: string[];
+  /** Link the files to the building at this address: [GIS street name, house number]. */
+  address?: [string, number];
   areaHe?: string;
   areaEn?: string;
 }
 
-const HABIMA = 'b-149522836'; // הבימה 1 / תרס"ט 2
-const BEN_ZION_3_COMPLEX = 'b-495363269'; // שדרות בן ציון 3 / חיסין 4א-4ג
-const BEN_ZION_1 = 'b-149523867'; // שדרות בן ציון 1 / המלך ג'ורג' 48
+const HABIMA: [string, number] = ['הבימה', 1]; // הבימה 1 / תרס"ט 2
+const BEN_ZION_3: [string, number] = ['בן ציון', 3]; // שדרות בן ציון 3 / חיסין 4א-4ג
+const BEN_ZION_1: [string, number] = ['בן ציון', 1]; // שדרות בן ציון 1 / המלך ג'ורג' 48
 
 export const FOLDER_LINKS: Record<string, FolderLink> = {
   // "חיסין 4" holds archive file 03500030 of חיסין 4ג / שדרות בן ציון 3 (building 31612),
   // not plain חיסין 4 (building 31616), even though the file names start with "חיסין 4".
-  '1qBW4yqwDW6MIna5z3DhTIB7VlebgUmbV': { buildingIds: [BEN_ZION_3_COMPLEX] },
+  '1qBW4yqwDW6MIna5z3DhTIB7VlebgUmbV': { address: BEN_ZION_3 },
 
   // Cultural sites with a building in the model
-  '11QM2bLHsnyCfrdhWOTtTptECzkeHfpOv': { buildingIds: [HABIMA] }, // בית הבימה
-  '1KOWUU7HU6YCfM6WjsCSjgrR9uW8Sl6GR': { buildingIds: [HABIMA] }, // כיכר התזמורת והבימה – תא 3264, תא/מק 3660
-  '14Et3OOadwLEVGRcOljIZ5Mc9ZFUbRHGd': { buildingIds: [BEN_ZION_1] }, // קולנוע מקסים והאוזן השלישית
+  '11QM2bLHsnyCfrdhWOTtTptECzkeHfpOv': { address: HABIMA }, // בית הבימה
+  '1KOWUU7HU6YCfM6WjsCSjgrR9uW8Sl6GR': { address: HABIMA }, // כיכר התזמורת והבימה – תא 3264, תא/מק 3660
+  '14Et3OOadwLEVGRcOljIZ5Mc9ZFUbRHGd': { address: BEN_ZION_1 }, // קולנוע מקסים והאוזן השלישית
 
   // Public spaces and area-wide plans
   '1-RseJh-SxsnOqoIJ8xLvpeECuQ8YWwMr': { areaHe: 'מטרו M2 – תחנת הבימה', areaEn: 'Metro M2 – Habima station' },
@@ -40,12 +41,3 @@ export const FOLDER_LINKS: Record<string, FolderLink> = {
 
 /** Files directly in the root of the shared folder (index documents). */
 export const ROOT_AREA = { areaHe: 'מסמכי האוסף', areaEn: 'Collection documents' };
-
-/**
- * Buildings that are separate OSM envelopes but one municipal building / file.
- * The first id is the one documents are pinned to.
- */
-export const BUILDING_COMPOUNDS: string[][] = [
-  // שדרות בן ציון 3 / חיסין 4א, 4ב, 4ג
-  ['b-495363269', 'b-495363270', 'b-495363271', 'b-495363272', 'b-495363273', 'b-495363274', 'b-495363275'],
-];
